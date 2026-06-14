@@ -8,6 +8,8 @@ vendor/
 *_err
 *.py
 go*
+!go.mod
+!go.sum
 compile_commands.json
 
 vendor/
