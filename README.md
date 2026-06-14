@@ -64,13 +64,3 @@ The `trigger` tool generates code to exploit specific kernel objects based on th
 Thank you to everyone who contributed code and ideas to BridgeRouter. If you encounter issues or have suggestions, please submit an Issue or Pull Request.  
 
 Let's explore the depths of the kernel together! 🚀  
-
----
-
-### Notes for Technical Translation:  
-1. **Tool Names**: Retain original names (`identifier`, `trigger`) for consistency.  
-2. **Code Blocks**: Keep commands and directory structures unchanged.  
-3. **Terminology**: Critical terms like "exploit generation" and "trigger code" align with cybersecurity conventions.  
-4. **Tone**: Maintain a professional yet approachable style suitable for technical documentation.  
-
-Need adjustments for specific contexts? Let me know! 💻🔧

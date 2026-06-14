@@ -1,0 +1,6 @@
+[submodule "llvm-project"]
+	path = llvm-project
+	url = https://github.com/llvm/llvm-project.git
+[submodule "linux"]
+	path = linux
+	url = https://github.com/torvalds/linux.git

@@ -1,5 +1,7 @@
 #!/bin/bash
 
+set -e
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
@@ -7,14 +9,13 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 HOME=$(pwd)
-KERNEL_SRC="$HOME/linux-5.15.178"
+KERNEL_SRC="$HOME/linux"
 IDNT_SRC="$HOME/identifier"
 TRIG_SRC="$HOME/trigger"
-LLVM_SRC="$HOME/llvm-project"
 
 run_identifier() {
     echo -e "${BLUE}==> Starting identifier tool...${NC}"
-    output_dir="$HOME/dump-5.15.178"
+    output_dir="$HOME/dump"
     mkdir -p "$output_dir"
 
     $IDNT_SRC/build/lib/identifier \
@@ -43,24 +44,7 @@ run_identifier() {
 run_trigger() {
     echo -e "${BLUE}==> Running trigger tool...${NC}"
 
-    sed -i "s|/home/user/Tools/w2l/code/out/defdebug/dumpResults/merged_output.json|$HOME/dump/merged.json|g" "$HOME/llvm-caplog.patch"
-    patch -p1 -d "$LLVM_SRC" < "$HOME/llvm-caplog.patch"
-
-    cd $LLVM_SRC/build
-    make && sudo make install
-    if [ ! -f "/usr/local/lib/LLVMCapabilityLog.so" ]; then
-        echo -e "${RED}Error: LLVMCapabilityLog.so not found. Aborting.${NC}"
-        exit 1
-    fi
-
-    sudo mv /usr/local/bin/clang-14 /usr/local/bin/clang-14_bk
-    sudo cp "$HOME/tools/clang-trigger" /usr/local/bin/clang-14
-
-    cd "$KERNEL_SRC" || exit 1
-    make clean
-    make LLVM=1 -j"$(nproc)" bzImage 2> err
-
-    cd "$TRIGG_SRC" || exit 1
+    cd "$TRIG_SRC" || exit 1
     ./bin/syz-manager -config "$HOME/tools/default.cfg"
 
     echo -e "${GREEN}Trigger tool execution completed.${NC}"

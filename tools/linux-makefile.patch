@@ -1,0 +1,38 @@
+diff --git a/Makefile b/Makefile
+index de1acaefe87e..350917711b75 100644
+--- a/Makefile
++++ b/Makefile
+@@ -407,8 +407,8 @@ HOST_LFS_LDFLAGS := $(shell getconf LFS_LDFLAGS 2>/dev/null)
+ HOST_LFS_LIBS := $(shell getconf LFS_LIBS 2>/dev/null)
+ 
+ ifneq ($(LLVM),)
+-HOSTCC	= clang
+-HOSTCXX	= clang++
++HOSTCC	= $(LLVM)clang
++HOSTCXX	= $(LLVM)clang++
+ else
+ HOSTCC	= gcc
+ HOSTCXX	= g++
+@@ -426,14 +426,14 @@ KBUILD_HOSTLDLIBS   := $(HOST_LFS_LIBS) $(HOSTLDLIBS)
+ # Make variables (CC, etc...)
+ CPP		= $(CC) -E
+ ifneq ($(LLVM),)
+-CC		= clang
+-LD		= ld.lld
+-AR		= llvm-ar
+-NM		= llvm-nm
+-OBJCOPY		= llvm-objcopy
+-OBJDUMP		= llvm-objdump
+-READELF		= llvm-readelf
+-STRIP		= llvm-strip
++CC		= $(LLVM)clang
++LD		= $(LLVM)ld.lld
++AR		= $(LLVM)llvm-ar
++NM		= $(LLVM)llvm-nm
++OBJCOPY		= $(LLVM)llvm-objcopy
++OBJDUMP		= $(LLVM)llvm-objdump
++READELF		= $(LLVM)llvm-readelf
++STRIP		= $(LLVM)llvm-strip
+ else
+ CC		= $(CROSS_COMPILE)gcc
+ LD		= $(CROSS_COMPILE)ld
