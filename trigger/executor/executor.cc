@@ -1151,11 +1151,11 @@ void write_call_output(thread_t* th, bool finished)
 	write_output(th->call_num);
 	write_output(reserrno);
 	write_output(call_flags);
-	uint32*const allc_bit_vec = write_output_64(0);
+	uint32* const allc_bit_vec = write_output_64(0);
 	write_output_64(0);
 	write_output_64(0);
 	write_output_64(0);
-	uint32*const copy_bit_vec = write_output_64(0);
+	uint32* const copy_bit_vec = write_output_64(0);
 	write_output_64(0);
 	write_output_64(0);
 	write_output_64(0);
@@ -1199,8 +1199,7 @@ void write_call_output(thread_t* th, bool finished)
 			unsigned off = infos.buf[i].stIndex;
 			if (infos.buf[i].isAlloc) {
 				*allc_bit_vec |= (1 << off);
-			}
-			else {
+			} else {
 				*copy_bit_vec |= (1 << off);
 			}
 		}
