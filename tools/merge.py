@@ -73,6 +73,9 @@ def generate_config(copy_list):
         configs += get_func_configs(func)
     return list(set(configs))
 
+def unique_list(items):
+    return list(dict.fromkeys(items))
+
 for filename in os.listdir(directory):
     if filename.endswith('.json') and filename.startswith('struct'):
         file_path = os.path.join(directory, filename)
@@ -86,8 +89,8 @@ for filename in os.listdir(directory):
                     #     value['configs'] = generate_config(value['copy'])
                     # else:
                     #     value['configs'] = []
-                    value['bridge_off'] = set(value['bridge_off'])
-                    value['router_off'] = set(value['router_off'])
+                    value['bridge_off'] = unique_list(value['bridge_off'])
+                    value['router_off'] = unique_list(value['router_off'])
                     merged_data[key] = value
 
 with open(output_file, 'w') as file:

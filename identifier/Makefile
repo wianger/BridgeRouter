@@ -1,7 +1,7 @@
 CUR_DIR = $(shell pwd)
 SRC_DIR := ${CUR_DIR}/src
 BUILD_DIR := ${CUR_DIR}/build
-LLVM_BUILD := /usr/local
+LLVM_BUILD := ${CUR_DIR}/../opt/llvm/
 
 NPROC := ${shell nproc}
 
