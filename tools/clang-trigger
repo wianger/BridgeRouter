@@ -1,2 +1,23 @@
 #!/bin/bash
-clang-14_bk -flegacy-pass-manager -Xclang -load -Xclang /usr/local/lib/LLVMCapabilityLog.so -O0 $@
+set -e
+
+DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ -x "$DIR/clang-14_bk" ]; then
+    LLVM_BIN="$DIR"
+    REPO_ROOT="$(cd "$DIR/../../.." && pwd)"
+else
+    REPO_ROOT="$(cd "$DIR/.." && pwd)"
+    LLVM_BIN="$REPO_ROOT/opt/llvm/bin"
+fi
+
+MERGED_JSON="$REPO_ROOT/dump/merged.json"
+PLUGIN="$LLVM_BIN/../lib/LLVMCapabilityLog.so"
+REAL_CLANG="$LLVM_BIN/clang-14_bk"
+
+if [ -f "$MERGED_JSON" ]; then
+    exec "$REAL_CLANG" -flegacy-pass-manager \
+        -Xclang -load -Xclang "$PLUGIN" \
+        -O0 "$@"
+fi
+
+exec "$REAL_CLANG" -flegacy-pass-manager -O0 "$@"

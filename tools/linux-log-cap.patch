@@ -1,0 +1,233 @@
+diff --git a/arch/x86/entry/syscalls/syscall_64.tbl b/arch/x86/entry/syscalls/syscall_64.tbl
+index 78672124d28b..7241159854a0 100644
+--- a/arch/x86/entry/syscalls/syscall_64.tbl
++++ b/arch/x86/entry/syscalls/syscall_64.tbl
+@@ -363,6 +363,9 @@
+ 439	common	faccessat2		sys_faccessat2
+ 440	common	process_madvise		sys_process_madvise
+ 441	common	epoll_pwait2		sys_epoll_pwait2
++454	common	myinit			sys_myinit
++455	common	myfinal			sys_myfinal
++456	common	get_log_cap		sys_get_log_cap
+ 
+ #
+ # Due to a historical design error, certain syscalls are numbered differently
+diff --git a/kernel/Makefile b/kernel/Makefile
+index aa7368c7eabf..804d5a018d33 100644
+--- a/kernel/Makefile
++++ b/kernel/Makefile
+@@ -9,7 +9,7 @@ obj-y     = fork.o exec_domain.o panic.o \
+ 	    signal.o sys.o umh.o workqueue.o pid.o task_work.o \
+ 	    extable.o params.o \
+ 	    kthread.o sys_ni.o nsproxy.o \
+-	    notifier.o ksysfs.o cred.o reboot.o \
++	    notifier.o ksysfs.o cred.o reboot.o log_cap.o \
+ 	    async.o range.o smpboot.o ucount.o regset.o
+ 
+ obj-$(CONFIG_USERMODE_DRIVER) += usermode_driver.o
+diff --git a/kernel/log_cap.c b/kernel/log_cap.c
+new file mode 100644
+index 000000000000..b8d319d93135
+--- /dev/null
++++ b/kernel/log_cap.c
+@@ -0,0 +1,200 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Minimal runtime support for BridgeRouter's LLVM capability logging pass.
++ */
++
++#include <linux/errno.h>
++#include <linux/kernel.h>
++#include <linux/sched.h>
++#include <linux/spinlock.h>
++#include <linux/syscalls.h>
++#include <linux/types.h>
++#include <linux/uaccess.h>
++
++#define LOG_CAP_MAX_INFOS	128
++#define LOG_CAP_MAX_SESSIONS	64
++
++struct log_cap_info {
++	bool isAlloc;
++	u8 stIndex;
++};
++
++struct log_cap_session {
++	pid_t tgid;
++	bool active;
++	unsigned int size;
++	struct log_cap_info infos[LOG_CAP_MAX_INFOS];
++};
++
++static DEFINE_SPINLOCK(log_cap_lock);
++static struct log_cap_session log_cap_sessions[LOG_CAP_MAX_SESSIONS];
++
++static struct log_cap_session *log_cap_find_locked(pid_t tgid)
++{
++	int i;
++
++	for (i = 0; i < LOG_CAP_MAX_SESSIONS; i++) {
++		if (log_cap_sessions[i].tgid == tgid)
++			return &log_cap_sessions[i];
++	}
++
++	return NULL;
++}
++
++static struct log_cap_session *log_cap_alloc_locked(pid_t tgid)
++{
++	struct log_cap_session *session;
++	int i;
++
++	session = log_cap_find_locked(tgid);
++	if (session)
++		return session;
++
++	for (i = 0; i < LOG_CAP_MAX_SESSIONS; i++) {
++		if (!log_cap_sessions[i].tgid) {
++			session = &log_cap_sessions[i];
++			session->tgid = tgid;
++			session->active = false;
++			session->size = 0;
++			return session;
++		}
++	}
++
++	for (i = 0; i < LOG_CAP_MAX_SESSIONS; i++) {
++		if (!log_cap_sessions[i].active) {
++			session = &log_cap_sessions[i];
++			session->tgid = tgid;
++			session->active = false;
++			session->size = 0;
++			return session;
++		}
++	}
++
++	return NULL;
++}
++
++static void log_cap_reset_locked(struct log_cap_session *session)
++{
++	if (!session)
++		return;
++
++	session->active = false;
++	session->size = 0;
++}
++
++static void log_cap_add_locked(struct log_cap_session *session, bool is_alloc,
++			       u8 st_index)
++{
++	unsigned int i;
++
++	if (!session || !session->active)
++		return;
++
++	for (i = 0; i < session->size; i++) {
++		if (session->infos[i].isAlloc == is_alloc &&
++		    session->infos[i].stIndex == st_index)
++			return;
++	}
++
++	if (session->size >= LOG_CAP_MAX_INFOS)
++		return;
++
++	session->infos[session->size].isAlloc = is_alloc;
++	session->infos[session->size].stIndex = st_index;
++	session->size++;
++}
++
++void notrace log_cap(const void *dst, const void *src, s64 len, u8 st_index)
++{
++	struct log_cap_session *session;
++	unsigned long flags;
++	bool is_alloc;
++	pid_t tgid;
++
++	(void)len;
++
++	tgid = task_tgid_nr(current);
++	if (!tgid)
++		return;
++
++	is_alloc = !dst && !src;
++
++	spin_lock_irqsave(&log_cap_lock, flags);
++	session = log_cap_find_locked(tgid);
++	log_cap_add_locked(session, is_alloc, st_index);
++	spin_unlock_irqrestore(&log_cap_lock, flags);
++}
++
++SYSCALL_DEFINE0(myinit)
++{
++	struct log_cap_session *session;
++	unsigned long flags;
++	pid_t tgid = task_tgid_nr(current);
++
++	if (!tgid)
++		return -ESRCH;
++
++	spin_lock_irqsave(&log_cap_lock, flags);
++	session = log_cap_alloc_locked(tgid);
++	if (!session) {
++		spin_unlock_irqrestore(&log_cap_lock, flags);
++		return -ENOMEM;
++	}
++	session->size = 0;
++	session->active = true;
++	spin_unlock_irqrestore(&log_cap_lock, flags);
++
++	return 0;
++}
++
++SYSCALL_DEFINE0(myfinal)
++{
++	struct log_cap_session *session;
++	unsigned long flags;
++	pid_t tgid = task_tgid_nr(current);
++
++	if (!tgid)
++		return -ESRCH;
++
++	spin_lock_irqsave(&log_cap_lock, flags);
++	session = log_cap_find_locked(tgid);
++	if (session)
++		session->active = false;
++	spin_unlock_irqrestore(&log_cap_lock, flags);
++
++	return 0;
++}
++
++SYSCALL_DEFINE1(get_log_cap, struct log_cap_info __user *, ubuf)
++{
++	struct log_cap_info snapshot[LOG_CAP_MAX_INFOS];
++	struct log_cap_session *session;
++	unsigned long flags;
++	unsigned int size = 0;
++	pid_t tgid = task_tgid_nr(current);
++
++	if (!tgid)
++		return -ESRCH;
++
++	spin_lock_irqsave(&log_cap_lock, flags);
++	session = log_cap_alloc_locked(tgid);
++	if (!session) {
++		spin_unlock_irqrestore(&log_cap_lock, flags);
++		return -ENOMEM;
++	}
++
++	if (!ubuf) {
++		log_cap_reset_locked(session);
++		spin_unlock_irqrestore(&log_cap_lock, flags);
++		return 0;
++	}
++
++	size = session->size;
++	memcpy(snapshot, session->infos, size * sizeof(snapshot[0]));
++	spin_unlock_irqrestore(&log_cap_lock, flags);
++
++	if (copy_to_user(ubuf, snapshot, size * sizeof(snapshot[0])))
++		return -EFAULT;
++
++	return size;
++}

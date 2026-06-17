@@ -188,7 +188,7 @@ index 000000000000..0ba22b74fbc8
 +    }
 +
 +private:
-+    const string JsonPath = "/home/user/Tools/w2l/code/out/defdebug/dumpResults/merged_output.json";
++    const string JsonPath = "/home/user/Kernel/BridgeRouter/dump/merged.json";
 +    json::Object* JsonObj;
 +
 +    struct ObjectInfo {
