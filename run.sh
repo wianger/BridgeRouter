@@ -12,6 +12,35 @@ HOME=$(pwd)
 KERNEL_SRC="$HOME/linux"
 IDNT_SRC="$HOME/identifier"
 TRIG_SRC="$HOME/trigger"
+TOOL_SRC="$HOME/tools"
+LLVM_INSTALL="$HOME/opt/llvm"
+KERNEL_VERSION="v5.11"
+
+apply_log_cap_patch() {
+    if grep -q "sys_get_log_cap" "$KERNEL_SRC/arch/x86/entry/syscalls/syscall_64.tbl" &&
+       grep -q "log_cap.o" "$KERNEL_SRC/kernel/Makefile" &&
+       [ -f "$KERNEL_SRC/kernel/log_cap.c" ]; then
+        return
+    fi
+
+    patch -p1 -d "$KERNEL_SRC" < "$TOOL_SRC/linux-log-cap.patch"
+}
+
+rebuild_kernel() {
+    echo -e "${BLUE}==> Rebuilding Linux kernel with identifier output...${NC}"
+
+    cd "$KERNEL_SRC" || exit 1
+    git checkout "$KERNEL_VERSION"
+    make mrproper
+    git checkout -- Makefile
+    patch -p1 -d "$KERNEL_SRC" < "$TOOL_SRC/linux-makefile.patch"
+    apply_log_cap_patch
+    cp "$TOOL_SRC/linux_config" .config
+    make olddefconfig LLVM="$LLVM_INSTALL/bin/"
+    make LLVM="$LLVM_INSTALL/bin/" -j"$(nproc)" bzImage 2> err
+
+    echo -e "${GREEN}Kernel rebuild completed successfully.${NC}"
+}
 
 run_identifier() {
     echo -e "${BLUE}==> Starting identifier tool...${NC}"
@@ -39,13 +68,15 @@ run_identifier() {
         echo -e "${RED}Error: merged.json was not generated.${NC}"
         exit 1
     fi
+
+    rebuild_kernel
 }
 
 run_trigger() {
     echo -e "${BLUE}==> Running trigger tool...${NC}"
 
     cd "$TRIG_SRC" || exit 1
-    ./bin/syz-manager -config "$HOME/tools/default.cfg"
+    ./bin/syz-manager -debug -config "$HOME/tools/default.cfg"
 
     echo -e "${GREEN}Trigger tool execution completed.${NC}"
 }

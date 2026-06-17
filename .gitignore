@@ -3,3 +3,7 @@
 .config/
 .codex/
 opt/
+*.img
+*id_rsa*
+workdir/
+dump/
