@@ -191,7 +191,7 @@ type ChoiceTable struct {
 func InsertMySyscall(syscalls []*Syscall, enabled map[*Syscall]bool) {
 	meta_init := &Syscall{
 		ID:          2617, // from executor/syscalls.h
-		NR:          455,
+		NR:          454,
 		Name:        "myinit",
 		CallName:    "sys_myinit",
 		Args:        nil,
@@ -212,7 +212,7 @@ func InsertMySyscall(syscalls []*Syscall, enabled map[*Syscall]bool) {
 	}
 	meta_final := &Syscall{
 		ID:          2616, // from executor/syscalls.h
-		NR:          454,
+		NR:          455,
 		Name:        "myfinal",
 		CallName:    "sys_myfinal",
 		Args:        nil,
