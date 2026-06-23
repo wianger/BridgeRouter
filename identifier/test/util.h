@@ -24,4 +24,8 @@ void copy_from_user(void *to, void *from, unsigned size) {
   to = (char *)from + size;
 }
 
+void copy_to_user(void *to, void *from, unsigned size) {
+  to = (char *)from + size;
+}
+
 void *get_heap_buf(unsigned len) { return kmalloc(len); }
