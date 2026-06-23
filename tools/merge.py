@@ -89,9 +89,33 @@ for filename in os.listdir(directory):
                     #     value['configs'] = generate_config(value['copy'])
                     # else:
                     #     value['configs'] = []
-                    value['bridge_off'] = unique_list(value['bridge_off'])
-                    value['router_off'] = unique_list(value['router_off'])
+                    if 'bridge_off' in value:
+                        value['bridge_off'] = unique_list(value['bridge_off'])
+                    if 'router_off' in value:
+                        value['router_off'] = unique_list(value['router_off'])
+                    if 'skbuffer_off' in value:
+                        value['skbuffer_off'] = unique_list(value['skbuffer_off'])
+                    if 'skbuffer_read' in value:
+                        value['skbuffer_read'] = unique_list(value['skbuffer_read'])
+                    if 'skbuffer_write' in value:
+                        value['skbuffer_write'] = unique_list(value['skbuffer_write'])
+                    if 'skbuffer_alloc' in value:
+                        value['skbuffer_alloc'] = unique_list(value['skbuffer_alloc'])
+                    if 'skbuffer_size' in value:
+                        value['skbuffer_size'] = unique_list(value['skbuffer_size'])
                     merged_data[key] = value
+                else:
+                    current = merged_data[key]
+                    for list_key in ('copy', 'alloc', 'bridge_off', 'router_off',
+                                     'skbuffer_off', 'skbuffer_read',
+                                     'skbuffer_write', 'skbuffer_alloc',
+                                     'skbuffer_size'):
+                        if list_key in value:
+                            current[list_key] = unique_list(
+                                current.get(list_key, []) + value.get(list_key, []))
+                    for bool_key in ('bridge', 'router', 'skbuffer'):
+                        if bool_key in value:
+                            current[bool_key] = current.get(bool_key, False) or value.get(bool_key, False)
 
 with open(output_file, 'w') as file:
     json.dump(merged_data, file, indent=4)
