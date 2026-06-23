@@ -30,6 +30,7 @@ class AllocAnalyzerPass : public IterativeModulePass {
   void handleGetElement(llvm::Value *V, StoreMap &SM);
   void analyzeAlloc(llvm::CallInst *callInst);
   bool getAllocSite(std::vector<Value *> &argSet, std::set<CallInst *> &retSet);
+  llvm::Value *getAllocSizeValue(llvm::CallInst *callInst);
 
   bool isPriviledged(llvm::Function *F);
 
