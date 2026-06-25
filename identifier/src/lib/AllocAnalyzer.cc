@@ -137,23 +137,7 @@ bool AllocAnalyzerPass::isCall2Alloc(std::string calleeName) {
   if (std::find(allocAPIVec.begin(), allocAPIVec.end(), calleeName) !=
       allocAPIVec.end())
     return true;
-  if (isAllocFn(calleeName)) return true;
   return false;
-}
-
-llvm::Value *AllocAnalyzerPass::getAllocSizeValue(llvm::CallInst *callInst) {
-  Function *F = callInst->getCalledFunction();
-  if (!F) {
-    F = dyn_cast<Function>(callInst->getCalledOperand()->stripPointerCasts());
-  }
-  if (!F) return nullptr;
-
-  int sizeArg = -1;
-  int flagArg = -1;
-  if (!isAllocFn(F->getName(), &sizeArg, &flagArg)) return nullptr;
-  if (sizeArg < 0 || static_cast<unsigned>(sizeArg) >= callInst->arg_size())
-    return nullptr;
-  return callInst->getArgOperand(sizeArg);
 }
 
 llvm::Value *AllocAnalyzerPass::getOffset(llvm::GetElementPtrInst *GEP) {
@@ -250,11 +234,6 @@ void AllocAnalyzerPass::analyzeAlloc(llvm::CallInst *callInst) {
   Module *M;
   unsigned fromOffset = -1;
   bool isOrigin = false;
-  struct FieldAllocRecord {
-    StructType *stType;
-    unsigned offset;
-  };
-  std::vector<FieldAllocRecord> fieldAllocRecords;
 
   M = callInst->getModule();
   F = callInst->getCalledFunction();
@@ -294,7 +273,7 @@ void AllocAnalyzerPass::analyzeAlloc(llvm::CallInst *callInst) {
       PointerType *ptrTy = dyn_cast<PointerType>(BCI->getDestTy());
       if (!ptrTy || isOrigin) continue;
       stType = dyn_cast<StructType>(ptrTy->getPointerElementType());
-      if (stType) continue;
+      if (stType) break;
     } else if (auto CSI = dyn_cast<ConstantInt>(Op0)) {
       continue;
     } else if (auto GEP = dyn_cast<GetElementPtrInst>(Op1)) {
@@ -304,11 +283,10 @@ void AllocAnalyzerPass::analyzeAlloc(llvm::CallInst *callInst) {
         continue;
 
       stType = dyn_cast<StructType>(GEP->getSourceElementType());
-      if (stType && !isOrigin) {
-        fieldAllocRecords.push_back({stType, fromOffset});
-      } else {
+      if (stType)
+        break;
+      else
         fromOffset = -1;
-      }
     }
   }
 
@@ -340,32 +318,14 @@ void AllocAnalyzerPass::analyzeAlloc(llvm::CallInst *callInst) {
   KeyStructMap::iterator it = Ctx->keyStructMap.find(structName);
   if (it != Ctx->keyStructMap.end()) {
     it->second->allocaInst.insert(callInst);
+    if (fromOffset != -1) it->second->fieldAllocGEP.insert(fromOffset);
 
   } else {
     StructInfo *stInfo = Ctx->structAnalyzer.getStructInfo(stType, M);
     if (!stInfo) return;
     stInfo->allocaInst.insert(callInst);
+    if (fromOffset != -1) stInfo->fieldAllocGEP.insert(fromOffset);
     Ctx->keyStructMap.insert(std::make_pair(structName, stInfo));
-  }
-
-  Value *allocSizeValue = getAllocSizeValue(callInst);
-  if (!isOrigin && fromOffset != -1 && fieldAllocRecords.empty())
-    fieldAllocRecords.push_back({stType, fromOffset});
-
-  for (auto const &record : fieldAllocRecords) {
-    string fieldStructName = getScopeName(record.stType, M);
-    StructInfo *fieldStInfo = nullptr;
-    KeyStructMap::iterator fit = Ctx->keyStructMap.find(fieldStructName);
-    if (fit != Ctx->keyStructMap.end()) {
-      fieldStInfo = fit->second;
-    } else {
-      fieldStInfo = Ctx->structAnalyzer.getStructInfo(record.stType, M);
-      if (!fieldStInfo) continue;
-      Ctx->keyStructMap.insert(std::make_pair(fieldStructName, fieldStInfo));
-    }
-    fieldStInfo->allocaInst.insert(callInst);
-    fieldStInfo->fieldAllocGEP.insert(record.offset);
-    fieldStInfo->addFieldAllocInfo(record.offset, callInst, allocSizeValue);
   }
 }
 

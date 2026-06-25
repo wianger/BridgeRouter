@@ -34,7 +34,6 @@
 #include "GlobalCtx.h"
 #include "PermissionAnalysis.h"
 #include "PointerAnalysis.h"
-#include "SkbufferAnalyzer.h"
 #include "StructChecker.h"
 
 using namespace llvm;
@@ -48,10 +47,6 @@ cl::opt<unsigned> VerboseLevel(
 
 cl::opt<bool> DumpKeyStructs("dump-keystructs", cl::desc("Dump keystructs"),
                              cl::NotHidden, cl::init(false));
-
-cl::opt<bool> DumpSkbufferOnly("dump-skbuffer-only",
-                               cl::desc("Dump skbuffer-like structs only"),
-                               cl::NotHidden, cl::init(false));
 
 cl::opt<bool> DumpFlexibleStruts("dump-flexible-st",
                                  cl::desc("Dump flexible st"), cl::NotHidden,
@@ -217,19 +212,10 @@ int main(int argc, char **argv) {
     PAPass.dumpAlias();
   }
 
-  if (DumpSkbufferOnly) {
+  if (DumpKeyStructs) {
     CopyAnalyzerPass CAPass(&GlobalCtx);
     CAPass.run(GlobalCtx.Modules);
-    SkbufferAnalyzerPass SKPass(&GlobalCtx);
-    SKPass.run(GlobalCtx.Modules);
-    SKPass.dumpSkbuffers(true);
-  } else if (DumpKeyStructs) {
-    CopyAnalyzerPass CAPass(&GlobalCtx);
-    CAPass.run(GlobalCtx.Modules);
-    SkbufferAnalyzerPass SKPass(&GlobalCtx);
-    SKPass.run(GlobalCtx.Modules);
     CAPass.dumpKeyStructs();
-    SKPass.dumpSkbuffers();
   }
 
   if (AnalyzeKeyStructs) {

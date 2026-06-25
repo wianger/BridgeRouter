@@ -138,64 +138,6 @@ class StructInfo {
   llvm::SmallPtrSet<llvm::Instruction*, 32> copyInst;
   std::set<unsigned> fieldAllocGEP;  // GEP of fields
 
-  struct FieldAllocInfo {
-    llvm::Instruction* allocInst = nullptr;
-    llvm::Value* sizeValue = nullptr;
-  };
-
-  struct SkbufferInfo {
-    llvm::Instruction* accessInst = nullptr;
-    llvm::Instruction* allocInst = nullptr;
-    llvm::Value* accessLen = nullptr;
-    llvm::Value* allocSize = nullptr;
-    bool userRead = false;
-    bool userWrite = false;
-  };
-
-  std::map<unsigned, std::vector<FieldAllocInfo> > fieldAllocInfo;
-  std::map<unsigned, std::vector<SkbufferInfo> > skbufferInfo;
-  llvm::SmallPtrSet<llvm::Instruction*, 32> skbufferInst;
-
-  void addFieldAllocInfo(unsigned offset, llvm::Instruction* I,
-                         llvm::Value* sizeValue) {
-    FieldAllocInfo info;
-    info.allocInst = I;
-    info.sizeValue = sizeValue;
-    fieldAllocInfo[offset].push_back(info);
-  }
-
-  void addSkbufferInfo(unsigned offset, llvm::Instruction* accessInst,
-                       llvm::Instruction* allocInst, llvm::Value* accessLen,
-                       llvm::Value* allocSize, bool userRead, bool userWrite) {
-    if (accessInst && skbufferInst.find(accessInst) != skbufferInst.end())
-      return;
-
-    SkbufferInfo info;
-    info.accessInst = accessInst;
-    info.allocInst = allocInst;
-    info.accessLen = accessLen;
-    info.allocSize = allocSize;
-    info.userRead = userRead;
-    info.userWrite = userWrite;
-    skbufferInfo[offset].push_back(info);
-    if (accessInst) skbufferInst.insert(accessInst);
-  }
-
-  bool hasSkbufferInfo() const { return !skbufferInfo.empty(); }
-
-  json::Value dumpValue(llvm::Value* V) {
-    if (!V) return nullptr;
-    V = V->stripPointerCasts();
-    if (auto* CI = dyn_cast<ConstantInt>(V))
-      return static_cast<int64_t>(CI->getZExtValue());
-
-    std::string valueString;
-    raw_string_ostream valueStream(valueString);
-    V->printAsOperand(valueStream, false);
-    valueStream.flush();
-    return valueString;
-  }
-
   typedef std::vector<Value*> CmpSrc;
   struct CheckSrc {
     CmpSrc src1;
@@ -386,14 +328,11 @@ class StructInfo {
     siteInfo.dumpTo();
   }
 
-  void dumpStructInfo(bool dumpAllocable, bool dumpSkbufferOnly = false) {
-    if (dumpAllocable && allocaInst.size() == 0 && !hasSkbufferInfo()) return;
-    if (dumpSkbufferOnly && !hasSkbufferInfo()) return;
+  void dumpStructInfo(bool dumpAllocable) {
+    if (dumpAllocable && allocaInst.size() == 0) return;
 
-    json::Array copyArr, allocArr, bridgeOff, routerOff, skbufferOff,
-        skbufferRead, skbufferWrite, skbufferAlloc, skbufferSize;
+    json::Array copyArr, allocArr, bridgeOff, routerOff;
     bool isBridge = false, isRouter = false;
-    bool isSkbuffer = false;
 
     RES_REPORT("[+] " << name << "\n");
 
@@ -401,112 +340,66 @@ class StructInfo {
         dataLayout->getStructLayout(const_cast<StructType*>(stType));
     auto memOffsets = structlayout->getMemberOffsets();
 
-    if (!dumpSkbufferOnly) {
-      KA_LOGS(0, "AllocInst:\n");
-      for (auto* I : allocaInst) {
-        // KA_LOGS(0, *I << "\n");
-        allocArr.push_back(I->getFunction()->getName().str());
-        DEBUG_Inst(0, I);
-        // KA_LOGS(0, "\n");
-      }
-      KA_LOGS(0, "CopyInst:\n");
-      for (auto const& copy : copyInfo) {
-        unsigned offset = copy.first;
-
-        for (auto const& source : copy.second) {
-          Instruction* I = dyn_cast<Instruction>(source.first);
-          copyArr.push_back(I->getFunction()->getName().str());
-          bool unknown = false;
-          switch (source.second.TYPE) {
-            case STACK:
-              DEBUG_Inst(0, dyn_cast<Instruction>(source.first));
-              KA_LOGS(0, " Copying from STACK at offset : " << offset << "\n");
-              break;
-
-            case HEAP_SAME_OBJ:
-              DEBUG_Inst(0, dyn_cast<Instruction>(source.first));
-              KA_LOGS(0,
-                      " Copying from the same object in the HEAP at offset : "
-                          << offset << "\n");
-              break;
-
-            case HEAP_DIFF_OBJ:
-              DEBUG_Inst(0, dyn_cast<Instruction>(source.first));
-              KA_LOGS(0,
-                      " Copying from the different object in the HEAP at offset : "
-                          << offset << "\n");
-              break;
-
-            default:
-              DEBUG_Inst(0, dyn_cast<Instruction>(source.first));
-              KA_LOGS(0, " Unknown object at offset: " << offset << "\n");
-              unknown = true;
-              break;
-          }
-
-          if (source.second.KEY_OFFSET == 0) {
-            isRouter = true;
-            if (!unknown) routerOff.push_back(memOffsets[offset]);
-          } else if (source.second.KEY_OFFSET == 2) {
-            isBridge = true;
-            if (!unknown) bridgeOff.push_back(memOffsets[offset]);
-          }
-
-          dumpSiteInfo(source.second);
-        }
-      }
+    KA_LOGS(0, "AllocInst:\n");
+    for (auto* I : allocaInst) {
+      // KA_LOGS(0, *I << "\n");
+      allocArr.push_back(I->getFunction()->getName().str());
+      DEBUG_Inst(0, I);
+      // KA_LOGS(0, "\n");
     }
+    KA_LOGS(0, "CopyInst:\n");
+    for (auto const& copy : copyInfo) {
+      unsigned offset = copy.first;
 
-    KA_LOGS(0, "SkbufferInst:\n");
-    for (auto const& skbuffer : skbufferInfo) {
-      unsigned offset = skbuffer.first;
-      bool hasRead = false;
-      bool hasWrite = false;
+      for (auto const& source : copy.second) {
+        Instruction* I = dyn_cast<Instruction>(source.first);
+        copyArr.push_back(I->getFunction()->getName().str());
+        bool unknown = false;
+        switch (source.second.TYPE) {
+          case STACK:
+            DEBUG_Inst(0, dyn_cast<Instruction>(source.first));
+            KA_LOGS(0, " Copying from STACK at offset : " << offset << "\n");
+            break;
 
-      for (auto const& source : skbuffer.second) {
-        hasRead |= source.userRead;
-        hasWrite |= source.userWrite;
-      }
-      if (!hasRead || !hasWrite) continue;
+          case HEAP_SAME_OBJ:
+            DEBUG_Inst(0, dyn_cast<Instruction>(source.first));
+            KA_LOGS(0, " Copying from the same object in the HEAP at offset : "
+                           << offset << "\n");
+            break;
 
-      isSkbuffer = true;
-      if (offset < memOffsets.size())
-        skbufferOff.push_back(static_cast<int64_t>(memOffsets[offset]));
+          case HEAP_DIFF_OBJ:
+            DEBUG_Inst(0, dyn_cast<Instruction>(source.first));
+            KA_LOGS(
+                0, " Copying from the different object in the HEAP at offset : "
+                       << offset << "\n");
+            break;
 
-      for (auto const& source : skbuffer.second) {
-        if (source.userRead && source.accessInst) {
-          skbufferRead.push_back(
-              source.accessInst->getFunction()->getName().str());
+          default:
+            DEBUG_Inst(0, dyn_cast<Instruction>(source.first));
+            KA_LOGS(0, " Unknown object at offset: " << offset << "\n");
+            unknown = true;
+            break;
         }
-        if (source.userWrite && source.accessInst) {
-          skbufferWrite.push_back(
-              source.accessInst->getFunction()->getName().str());
-        }
-        if (source.allocInst) {
-          skbufferAlloc.push_back(
-              source.allocInst->getFunction()->getName().str());
-        }
-        if (source.allocSize) skbufferSize.push_back(dumpValue(source.allocSize));
 
-        DEBUG_Inst(0, source.accessInst);
+        if (source.second.KEY_OFFSET == 0) {
+          isRouter = true;
+          if (!unknown) routerOff.push_back(memOffsets[offset]);
+        } else if (source.second.KEY_OFFSET == 2) {
+          isBridge = true;
+          if (!unknown) bridgeOff.push_back(memOffsets[offset]);
+        }
+
+        dumpSiteInfo(source.second);
       }
     }
 
     json::Object structObj;
-    structObj["skbuffer"] = isSkbuffer;
-    structObj["skbuffer_off"] = std::move(skbufferOff);
-    structObj["skbuffer_read"] = std::move(skbufferRead);
-    structObj["skbuffer_write"] = std::move(skbufferWrite);
-    structObj["skbuffer_alloc"] = std::move(skbufferAlloc);
-    structObj["skbuffer_size"] = std::move(skbufferSize);
-    if (!dumpSkbufferOnly) {
-      structObj["copy"] = std::move(copyArr);
-      structObj["alloc"] = std::move(allocArr);
-      structObj["bridge"] = isBridge;
-      structObj["router"] = isRouter;
-      structObj["router_off"] = std::move(routerOff);
-      structObj["bridge_off"] = std::move(bridgeOff);
-    }
+    structObj["copy"] = std::move(copyArr);
+    structObj["alloc"] = std::move(allocArr);
+    structObj["bridge"] = isBridge;
+    structObj["router"] = isRouter;
+    structObj["router_off"] = std::move(routerOff);
+    structObj["bridge_off"] = std::move(bridgeOff);
 
     json::Object rootObj;
     rootObj[name] = std::move(structObj);
