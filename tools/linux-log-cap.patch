@@ -27,10 +27,10 @@ index aa7368c7eabf..804d5a018d33 100644
  obj-$(CONFIG_USERMODE_DRIVER) += usermode_driver.o
 diff --git a/kernel/log_cap.c b/kernel/log_cap.c
 new file mode 100644
-index 000000000000..b8d319d93135
+index 000000000000..99aafbcb8e8f
 --- /dev/null
 +++ b/kernel/log_cap.c
-@@ -0,0 +1,200 @@
+@@ -0,0 +1,209 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Minimal runtime support for BridgeRouter's LLVM capability logging pass.
@@ -47,13 +47,18 @@ index 000000000000..b8d319d93135
 +#define LOG_CAP_MAX_INFOS	128
 +#define LOG_CAP_MAX_SESSIONS	64
 +
++#define LOG_CAP_KIND_ALLOC	0
++#define LOG_CAP_KIND_COPY	1
++#define LOG_CAP_KIND_FUNC	2
++
 +struct log_cap_info {
-+	bool isAlloc;
++	u8 kind;
 +	u8 stIndex;
++	u16 siteID;
 +};
 +
 +struct log_cap_session {
-+	pid_t tgid;
++	pid_t pid;
 +	bool active;
 +	unsigned int size;
 +	struct log_cap_info infos[LOG_CAP_MAX_INFOS];
@@ -62,31 +67,31 @@ index 000000000000..b8d319d93135
 +static DEFINE_SPINLOCK(log_cap_lock);
 +static struct log_cap_session log_cap_sessions[LOG_CAP_MAX_SESSIONS];
 +
-+static struct log_cap_session *log_cap_find_locked(pid_t tgid)
++static struct log_cap_session *log_cap_find_locked(pid_t pid)
 +{
 +	int i;
 +
 +	for (i = 0; i < LOG_CAP_MAX_SESSIONS; i++) {
-+		if (log_cap_sessions[i].tgid == tgid)
++		if (log_cap_sessions[i].pid == pid)
 +			return &log_cap_sessions[i];
 +	}
 +
 +	return NULL;
 +}
 +
-+static struct log_cap_session *log_cap_alloc_locked(pid_t tgid)
++static struct log_cap_session *log_cap_alloc_locked(pid_t pid)
 +{
 +	struct log_cap_session *session;
 +	int i;
 +
-+	session = log_cap_find_locked(tgid);
++	session = log_cap_find_locked(pid);
 +	if (session)
 +		return session;
 +
 +	for (i = 0; i < LOG_CAP_MAX_SESSIONS; i++) {
-+		if (!log_cap_sessions[i].tgid) {
++		if (!log_cap_sessions[i].pid) {
 +			session = &log_cap_sessions[i];
-+			session->tgid = tgid;
++			session->pid = pid;
 +			session->active = false;
 +			session->size = 0;
 +			return session;
@@ -96,7 +101,7 @@ index 000000000000..b8d319d93135
 +	for (i = 0; i < LOG_CAP_MAX_SESSIONS; i++) {
 +		if (!log_cap_sessions[i].active) {
 +			session = &log_cap_sessions[i];
-+			session->tgid = tgid;
++			session->pid = pid;
 +			session->active = false;
 +			session->size = 0;
 +			return session;
@@ -115,8 +120,8 @@ index 000000000000..b8d319d93135
 +	session->size = 0;
 +}
 +
-+static void log_cap_add_locked(struct log_cap_session *session, bool is_alloc,
-+			       u8 st_index)
++static void log_cap_add_locked(struct log_cap_session *session, u8 kind,
++			       u8 st_index, u16 site_id)
 +{
 +	unsigned int i;
 +
@@ -124,37 +129,41 @@ index 000000000000..b8d319d93135
 +		return;
 +
 +	for (i = 0; i < session->size; i++) {
-+		if (session->infos[i].isAlloc == is_alloc &&
-+		    session->infos[i].stIndex == st_index)
++		if (session->infos[i].kind == kind &&
++		    session->infos[i].stIndex == st_index &&
++		    session->infos[i].siteID == site_id)
 +			return;
 +	}
 +
 +	if (session->size >= LOG_CAP_MAX_INFOS)
 +		return;
 +
-+	session->infos[session->size].isAlloc = is_alloc;
++	session->infos[session->size].kind = kind;
 +	session->infos[session->size].stIndex = st_index;
++	session->infos[session->size].siteID = site_id;
 +	session->size++;
 +}
 +
-+void notrace log_cap(const void *dst, const void *src, s64 len, u8 st_index)
++void notrace log_cap(const void *dst, const void *src, s64 len, u8 st_index,
++		     u16 site_id, u8 kind)
 +{
 +	struct log_cap_session *session;
 +	unsigned long flags;
-+	bool is_alloc;
-+	pid_t tgid;
++	pid_t pid;
 +
++	(void)dst;
++	(void)src;
 +	(void)len;
 +
-+	tgid = task_tgid_nr(current);
-+	if (!tgid)
++	pid = task_pid_nr(current);
++	if (!pid)
++		return;
++	if (kind > LOG_CAP_KIND_FUNC)
 +		return;
 +
-+	is_alloc = !dst && !src;
-+
 +	spin_lock_irqsave(&log_cap_lock, flags);
-+	session = log_cap_find_locked(tgid);
-+	log_cap_add_locked(session, is_alloc, st_index);
++	session = log_cap_find_locked(pid);
++	log_cap_add_locked(session, kind, st_index, site_id);
 +	spin_unlock_irqrestore(&log_cap_lock, flags);
 +}
 +
@@ -162,13 +171,13 @@ index 000000000000..b8d319d93135
 +{
 +	struct log_cap_session *session;
 +	unsigned long flags;
-+	pid_t tgid = task_tgid_nr(current);
++	pid_t pid = task_pid_nr(current);
 +
-+	if (!tgid)
++	if (!pid)
 +		return -ESRCH;
 +
 +	spin_lock_irqsave(&log_cap_lock, flags);
-+	session = log_cap_alloc_locked(tgid);
++	session = log_cap_alloc_locked(pid);
 +	if (!session) {
 +		spin_unlock_irqrestore(&log_cap_lock, flags);
 +		return -ENOMEM;
@@ -184,13 +193,13 @@ index 000000000000..b8d319d93135
 +{
 +	struct log_cap_session *session;
 +	unsigned long flags;
-+	pid_t tgid = task_tgid_nr(current);
++	pid_t pid = task_pid_nr(current);
 +
-+	if (!tgid)
++	if (!pid)
 +		return -ESRCH;
 +
 +	spin_lock_irqsave(&log_cap_lock, flags);
-+	session = log_cap_find_locked(tgid);
++	session = log_cap_find_locked(pid);
 +	if (session)
 +		session->active = false;
 +	spin_unlock_irqrestore(&log_cap_lock, flags);
@@ -204,13 +213,13 @@ index 000000000000..b8d319d93135
 +	struct log_cap_session *session;
 +	unsigned long flags;
 +	unsigned int size = 0;
-+	pid_t tgid = task_tgid_nr(current);
++	pid_t pid = task_pid_nr(current);
 +
-+	if (!tgid)
++	if (!pid)
 +		return -ESRCH;
 +
 +	spin_lock_irqsave(&log_cap_lock, flags);
-+	session = log_cap_alloc_locked(tgid);
++	session = log_cap_alloc_locked(pid);
 +	if (!session) {
 +		spin_unlock_irqrestore(&log_cap_lock, flags);
 +		return -ENOMEM;

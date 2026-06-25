@@ -69,7 +69,6 @@ install_llvm() {
     git checkout $LLVM_VERSION
     rm -rf build
 
-    sed -i "s|/home/user/Tools/w2l/code/out/defdebug/dumpResults/merged_output.json|$HOME/dump/merged.json|g" "$HOME/tools/llvm-caplog.patch"
     patch -p1 -d "$LLVM_SRC" < "$HOME/tools/llvm-caplog.patch"
 
     cmake -S llvm -B build \

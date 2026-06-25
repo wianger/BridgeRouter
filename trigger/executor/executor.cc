@@ -68,6 +68,7 @@ const int kOutPipeFd = kMaxFd - 2; // remapped from stdout
 const int kCoverFd = kOutPipeFd - kMaxThreads;
 const int kExtraCoverFd = kCoverFd - 1;
 const int kMaxArgs = 9;
+const int kCapBitvecBytes = 32;
 const int kCoverSize = 256 << 10;
 const int kFailStatus = 67;
 
@@ -275,6 +276,9 @@ struct thread_t {
 	intptr_t res;
 	uint32 reserrno;
 	bool fault_injected;
+	uint8 alloc_bit_vec[kCapBitvecBytes];
+	uint8 copy_bit_vec[kCapBitvecBytes];
+	uint8 site_bit_vec[kCapBitvecBytes];
 	cover_t cov;
 	bool soft_fail_state;
 };
@@ -337,6 +341,9 @@ struct call_reply {
 	uint32 call_num;
 	uint32 reserrno;
 	uint32 flags;
+	uint8 alloc_bit_vec[kCapBitvecBytes];
+	uint8 copy_bit_vec[kCapBitvecBytes];
+	uint8 site_bit_vec[kCapBitvecBytes];
 	uint32 signal_size;
 	uint32 cover_size;
 	uint32 comps_size;
@@ -749,19 +756,59 @@ void realloc_output_data()
 }
 #endif // if SYZ_EXECUTOR_USES_SHMEM
 
+#ifndef __NR_get_log_cap
 #define __NR_get_log_cap 456
+#endif
+#ifndef __NR_myinit
+#define __NR_myinit 454
+#endif
+#ifndef __NR_myfinal
+#define __NR_myfinal 455
+#endif
 #define INFO_MAX_NUM 128
 #define ST_NAME_SIZE 31
+#define LOG_CAP_KIND_ALLOC 0
+#define LOG_CAP_KIND_COPY 1
+#define LOG_CAP_KIND_FUNC 2
 
 struct log_cap_info {
-	bool isAlloc;
+	uint8_t kind;
 	uint8_t stIndex;
+	uint16_t siteID;
 };
 
-static struct {
-	unsigned size;
+static void clear_log_cap_bitvecs(thread_t* th)
+{
+	memset(th->alloc_bit_vec, 0, sizeof(th->alloc_bit_vec));
+	memset(th->copy_bit_vec, 0, sizeof(th->copy_bit_vec));
+	memset(th->site_bit_vec, 0, sizeof(th->site_bit_vec));
+}
+
+#if GOOS_linux
+static void set_log_cap_bit(uint8* bit_vec, unsigned index)
+{
+	if (index >= kCapBitvecBytes * 8)
+		return;
+	bit_vec[index / 8] |= 1 << (index % 8);
+}
+
+static void collect_log_cap(thread_t* th)
+{
 	struct log_cap_info buf[INFO_MAX_NUM];
-} infos;
+	long size = syscall(__NR_get_log_cap, buf);
+	if (size < 0)
+		exitf("get_log_cap failed");
+	if (size > INFO_MAX_NUM)
+		size = INFO_MAX_NUM;
+	for (long i = 0; i < size; ++i) {
+		if (buf[i].kind == LOG_CAP_KIND_ALLOC)
+			set_log_cap_bit(th->alloc_bit_vec, buf[i].stIndex);
+		else if (buf[i].kind == LOG_CAP_KIND_COPY)
+			set_log_cap_bit(th->copy_bit_vec, buf[i].stIndex);
+		set_log_cap_bit(th->site_bit_vec, buf[i].siteID);
+	}
+}
+#endif
 
 // execute_one executes program stored in input_data.
 void execute_one()
@@ -787,11 +834,6 @@ void execute_one()
 	uint64 prog_extra_cover_timeout = 0;
 	call_props_t call_props;
 	memset(&call_props, 0, sizeof(call_props));
-
-	// clear log_cap_infos
-	infos.size = 0;
-	syscall(__NR_get_log_cap, NULL);
-	syscall(__NR_myinit);
 
 	for (;;) {
 		uint64 call_num = read_input(&input_pos);
@@ -1151,17 +1193,24 @@ void write_call_output(thread_t* th, bool finished)
 	write_output(th->call_num);
 	write_output(reserrno);
 	write_output(call_flags);
-	uint32* const allc_bit_vec = write_output_64(0);
-	write_output_64(0);
-	write_output_64(0);
-	write_output_64(0);
-	uint32* const copy_bit_vec = write_output_64(0);
-	write_output_64(0);
-	write_output_64(0);
-	write_output_64(0);
+	uint32* const allc_bit_vec = output_pos;
+	for (int i = 0; i < kCapBitvecBytes / 8; i++)
+		write_output_64(0);
+	uint32* const copy_bit_vec = output_pos;
+	for (int i = 0; i < kCapBitvecBytes / 8; i++)
+		write_output_64(0);
+	uint32* const site_bit_vec = output_pos;
+	for (int i = 0; i < kCapBitvecBytes / 8; i++)
+		write_output_64(0);
 	uint32* signal_count_pos = write_output(0); // filled in later
 	uint32* cover_count_pos = write_output(0); // filled in later
 	uint32* comps_count_pos = write_output(0); // filled in later
+
+	if (finished) {
+		memcpy(allc_bit_vec, th->alloc_bit_vec, kCapBitvecBytes);
+		memcpy(copy_bit_vec, th->copy_bit_vec, kCapBitvecBytes);
+		memcpy(site_bit_vec, th->site_bit_vec, kCapBitvecBytes);
+	}
 
 	if (flag_comparisons) {
 		// Collect only the comparisons
@@ -1189,21 +1238,6 @@ void write_call_output(thread_t* th, bool finished)
 		else
 			write_coverage_signal<uint32>(&th->cov, signal_count_pos, cover_count_pos);
 	}
-	if (finished) {
-		syscall(__NR_myfinal);
-		// get log_cap_infos
-		infos.size = syscall(__NR_get_log_cap, infos.buf);
-		if (infos.size < 0)
-			exitf("get_log_cap failed");
-		for (unsigned i = 0; i < infos.size; ++i) {
-			unsigned off = infos.buf[i].stIndex;
-			if (infos.buf[i].isAlloc) {
-				*allc_bit_vec |= (1 << off);
-			} else {
-				*copy_bit_vec |= (1 << off);
-			}
-		}
-	}
 	debug_verbose("out #%u: index=%u num=%u errno=%d finished=%d blocked=%d sig=%u cover=%u comps=%u\n",
 		      completed, th->call_index, th->call_num, reserrno, finished, blocked,
 		      *signal_count_pos, *cover_count_pos, *comps_count_pos);
@@ -1219,6 +1253,15 @@ void write_call_output(thread_t* th, bool finished)
 	reply.call_num = th->call_num;
 	reply.reserrno = reserrno;
 	reply.flags = call_flags;
+	if (finished) {
+		memcpy(reply.alloc_bit_vec, th->alloc_bit_vec, kCapBitvecBytes);
+		memcpy(reply.copy_bit_vec, th->copy_bit_vec, kCapBitvecBytes);
+		memcpy(reply.site_bit_vec, th->site_bit_vec, kCapBitvecBytes);
+	} else {
+		memset(reply.alloc_bit_vec, 0, sizeof(reply.alloc_bit_vec));
+		memset(reply.copy_bit_vec, 0, sizeof(reply.copy_bit_vec));
+		memset(reply.site_bit_vec, 0, sizeof(reply.site_bit_vec));
+	}
 	reply.signal_size = 0;
 	reply.cover_size = 0;
 	reply.comps_size = 0;
@@ -1242,6 +1285,12 @@ void write_extra_output()
 	write_output(-1); // call num
 	write_output(999); // errno
 	write_output(0); // call flags
+	for (int i = 0; i < kCapBitvecBytes / 8; i++)
+		write_output_64(0); // alloc bit vec
+	for (int i = 0; i < kCapBitvecBytes / 8; i++)
+		write_output_64(0); // copy bit vec
+	for (int i = 0; i < kCapBitvecBytes / 8; i++)
+		write_output_64(0); // site bit vec
 	uint32* signal_count_pos = write_output(0); // filled in later
 	uint32* cover_count_pos = write_output(0); // filled in later
 	write_output(0); // comps_count_pos
@@ -1321,12 +1370,21 @@ void execute_call(thread_t* th)
 
 	if (flag_coverage)
 		cover_reset(&th->cov);
+	clear_log_cap_bitvecs(th);
+#if GOOS_linux
+	syscall(__NR_get_log_cap, NULL);
+	syscall(__NR_myinit);
+#endif
 	// For pseudo-syscalls and user-space functions NONFAILING can abort before assigning to th->res.
 	// Arrange for res = -1 and errno = EFAULT result for such case.
 	th->res = -1;
 	errno = EFAULT;
 	NONFAILING(th->res = execute_syscall(call, th->args));
 	th->reserrno = errno;
+#if GOOS_linux
+	syscall(__NR_myfinal);
+	collect_log_cap(th);
+#endif
 	// Our pseudo-syscalls may misbehave.
 	if ((th->res == -1 && th->reserrno == 0) || call->attrs.ignore_return)
 		th->reserrno = EINVAL;

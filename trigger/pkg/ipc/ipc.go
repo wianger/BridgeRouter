@@ -90,15 +90,19 @@ type CallInfo struct {
 	Signal []uint32 // feedback signal, filled if FlagSignal is set
 	Cover  []uint32 // per-call coverage, filled if FlagSignal is set and cover == true,
 	// if dedup == false, then cov effectively contains a trace, otherwise duplicates are removed
-	Comps prog.CompMap // per-call comparison operands
-	Errno int          // call errno (0 if the call was successful)
+	Comps      prog.CompMap // per-call comparison operands
+	Errno      int          // call errno (0 if the call was successful)
+	AllcBitVec [bitvecSize]uint8
+	CopyBitVec [bitvecSize]uint8
+	SiteBitVec [bitvecSize]uint8
 }
 
 type ProgInfo struct {
-	Calls []CallInfo
-	AllcBitVec   [bitvecSize]uint8 // 0: alloc, 1: copy
-	CopyBitVec  [bitvecSize]uint8 // 0: none, 1: exist
-	Extra CallInfo // stores Signal and Cover collected from background threads
+	Calls      []CallInfo
+	AllcBitVec [bitvecSize]uint8 // 0: alloc, 1: copy
+	CopyBitVec [bitvecSize]uint8 // 0: none, 1: exist
+	SiteBitVec [bitvecSize]uint8
+	Extra      CallInfo // stores Signal and Cover collected from background threads
 }
 
 type Env struct {
@@ -362,8 +366,12 @@ func (env *Env) parseOutput(p *prog.Prog, opts *ExecOpts) (*ProgInfo, error) {
 			inf = &extraParts[len(extraParts)-1]
 		}
 		if inf.Flags&CallFinished != 0 {
-			info.AllcBitVec = reply.allocBitVec
-			info.CopyBitVec = reply.copyBitVec
+			inf.AllcBitVec = reply.allocBitVec
+			inf.CopyBitVec = reply.copyBitVec
+			inf.SiteBitVec = reply.siteBitVec
+			mergeBitVec(info.AllcBitVec[:], reply.allocBitVec[:])
+			mergeBitVec(info.CopyBitVec[:], reply.copyBitVec[:])
+			mergeBitVec(info.SiteBitVec[:], reply.siteBitVec[:])
 		}
 		if inf.Signal, ok = readUint32Array(&out, reply.signalSize); !ok {
 			return nil, fmt.Errorf("call %v/%v/%v: signal overflow: %v/%v",
@@ -542,19 +550,26 @@ type executeReply struct {
 	status uint32
 }
 
-const bitvecSize = 32;
+const bitvecSize = 32
+
+func mergeBitVec(dst, src []uint8) {
+	for i := range dst {
+		dst[i] |= src[i]
+	}
+}
 
 type callReply struct {
-	magic      uint32
-	index      uint32 // call index in the program
-	num        uint32 // syscall number (for cross-checking)
-	errno      uint32
-	flags      uint32 // see CallFlags
-	allocBitVec   [bitvecSize]uint8
+	magic       uint32
+	index       uint32 // call index in the program
+	num         uint32 // syscall number (for cross-checking)
+	errno       uint32
+	flags       uint32 // see CallFlags
+	allocBitVec [bitvecSize]uint8
 	copyBitVec  [bitvecSize]uint8
-	signalSize uint32
-	coverSize  uint32
-	compsSize  uint32
+	siteBitVec  [bitvecSize]uint8
+	signalSize  uint32
+	coverSize   uint32
+	compsSize   uint32
 	// signal/cover/comps follow
 }
 

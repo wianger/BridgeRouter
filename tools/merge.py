@@ -8,8 +8,12 @@ output_file = 'merged.json'
 merged_data = {}
 
 index_counter = 0
+site_counter = 0
 
 linux_dir = sys.argv[1]
+
+FUNCTION_FIELDS = ('functions', 'funcs', 'target_funcs', 'targets',
+                   'kernel_funcs')
 
 def get_func_configs(func):
     configs = []
@@ -73,15 +77,88 @@ def generate_config(copy_list):
         configs += get_func_configs(func)
     return list(set(configs))
 
+def list_value(value):
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    return [value]
+
+def normalize_func_list(items):
+    funcs = []
+    for item in list_value(items):
+        if isinstance(item, str) and item:
+            funcs.append(item)
+    return unique_list(funcs)
+
+def normalize_site_kind(kind):
+    if not isinstance(kind, str) or kind == '':
+        return 'func'
+    if kind in ('function', 'target', 'generic', 'kernel_func'):
+        return 'func'
+    return kind
+
 def unique_list(items):
     return list(dict.fromkeys(items))
 
-for filename in os.listdir(directory):
+def add_site(sites, seen_sites, kind, func):
+    global site_counter
+
+    kind = normalize_site_kind(kind)
+    if not isinstance(func, str) or func == '':
+        return
+
+    key = (kind, func)
+    if key in seen_sites:
+        return
+    seen_sites.add(key)
+
+    sites.append({
+        'id': site_counter,
+        'kind': kind,
+        'func': func,
+    })
+    site_counter += 1
+
+def build_sites(value):
+    sites = []
+    seen_sites = set()
+    alloc_list = normalize_func_list(value.get('alloc'))
+    copy_list = normalize_func_list(value.get('copy'))
+    func_list = []
+    existing_sites = list_value(value.get('sites'))
+
+    for field in FUNCTION_FIELDS:
+        func_list += normalize_func_list(value.get(field))
+    func_list = unique_list(func_list)
+
+    value['alloc'] = alloc_list
+    value['copy'] = copy_list
+    value['functions'] = func_list
+    for field in FUNCTION_FIELDS:
+        if field != 'functions':
+            value.pop(field, None)
+
+    for func in alloc_list:
+        add_site(sites, seen_sites, 'alloc', func)
+    for func in copy_list:
+        add_site(sites, seen_sites, 'copy', func)
+    for func in func_list:
+        add_site(sites, seen_sites, 'func', func)
+    for site in existing_sites:
+        if not isinstance(site, dict):
+            continue
+        func = site.get('func') or site.get('function') or site.get('name')
+        add_site(sites, seen_sites, site.get('kind'), func)
+
+    value['sites'] = sites
+
+for filename in sorted(os.listdir(directory)):
     if filename.endswith('.json') and filename.startswith('struct'):
         file_path = os.path.join(directory, filename)
         with open(file_path, 'r') as file:
             data = json.load(file)
-            for key, value in data.items():
+            for key, value in sorted(data.items()):
                 if key not in merged_data:
                     value['index'] = index_counter
                     index_counter += 1
@@ -89,8 +166,11 @@ for filename in os.listdir(directory):
                     #     value['configs'] = generate_config(value['copy'])
                     # else:
                     #     value['configs'] = []
-                    value['bridge_off'] = unique_list(value['bridge_off'])
-                    value['router_off'] = unique_list(value['router_off'])
+                    if 'bridge_off' in value:
+                        value['bridge_off'] = unique_list(value['bridge_off'])
+                    if 'router_off' in value:
+                        value['router_off'] = unique_list(value['router_off'])
+                    build_sites(value)
                     merged_data[key] = value
 
 with open(output_file, 'w') as file:

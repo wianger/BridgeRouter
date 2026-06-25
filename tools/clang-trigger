@@ -14,10 +14,17 @@ MERGED_JSON="$REPO_ROOT/dump/merged.json"
 PLUGIN="$LLVM_BIN/../lib/LLVMCapabilityLog.so"
 REAL_CLANG="$LLVM_BIN/clang-14_bk"
 
+EXTRA_ARGS=(-flegacy-pass-manager -O0)
+case "$(basename "$0")" in
+    clang++*|c++*)
+        EXTRA_ARGS=(--driver-mode=g++ "${EXTRA_ARGS[@]}")
+        ;;
+esac
+
 if [ -f "$MERGED_JSON" ]; then
-    exec "$REAL_CLANG" -flegacy-pass-manager \
+    exec "$REAL_CLANG" "${EXTRA_ARGS[@]}" \
         -Xclang -load -Xclang "$PLUGIN" \
-        -O0 "$@"
+        "$@"
 fi
 
-exec "$REAL_CLANG" -flegacy-pass-manager -O0 "$@"
+exec "$REAL_CLANG" "${EXTRA_ARGS[@]}" "$@"

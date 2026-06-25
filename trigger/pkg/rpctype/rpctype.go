@@ -14,14 +14,22 @@ import (
 )
 
 type Input struct {
-	Call     string
-	Prog     []byte
-	Signal   signal.Serial
-	Cover    []uint32
-	CallID   int // seq number of call in the prog to which the item is related (-1 for extra)
-	RawCover []uint32
+	Call       string
+	Prog       []byte
+	Signal     signal.Serial
+	Cover      []uint32
+	CallID     int // seq number of call in the prog to which the item is related (-1 for extra)
+	RawCover   []uint32
 	AllcBitVec []uint8
 	CopyBitVec []uint8
+	SiteBitVec []uint8
+	SiteCalls  []SiteCall
+}
+
+type SiteCall struct {
+	SiteID int
+	CallID int
+	Call   string
 }
 
 type Candidate struct {
@@ -42,7 +50,7 @@ type ConnectArgs struct {
 }
 
 type ConnectRes struct {
-	KcovPriority	  map[uint32]float64
+	KcovPriority      map[uint32]float64
 	EnabledCalls      []int
 	NoMutateCalls     map[int]bool
 	GitRevision       string

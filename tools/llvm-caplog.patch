@@ -2,11 +2,29 @@ diff --git a/llvm/lib/Transforms/CMakeLists.txt b/llvm/lib/Transforms/CMakeLists
 index dda5f6de11e3..9d6eb1941efa 100644
 --- a/llvm/lib/Transforms/CMakeLists.txt
 +++ b/llvm/lib/Transforms/CMakeLists.txt
-@@ -9,3 +9,4 @@ add_subdirectory(Hello)
- add_subdirectory(ObjCARC)
- add_subdirectory(Coroutines)
- add_subdirectory(CFGuard)
+@@ -11,0 +12 @@ add_subdirectory(CFGuard)
 +add_subdirectory(CapabilityLog)
+diff --git a/llvm/lib/Transforms/IPO/DeadArgumentElimination.cpp b/llvm/lib/Transforms/IPO/DeadArgumentElimination.cpp
+index 2a6e38b0437f..c97a2c2b3889 100644
+--- a/llvm/lib/Transforms/IPO/DeadArgumentElimination.cpp
++++ b/llvm/lib/Transforms/IPO/DeadArgumentElimination.cpp
+@@ -52,0 +53,4 @@
++#include "llvm/Bitcode/BitcodeWriter.h"
++#include "llvm/Support/ToolOutputFile.h"
++#include "llvm/Support/FileSystem.h"
++
+@@ -1090,0 +1095,11 @@ PreservedAnalyses DeadArgumentEliminationPass::run(Module &M,
++  std::string FileName = M.getSourceFileName();
++  if (FileName.find(".c") != FileName.npos) {
++    std::string Path = M.getSourceFileName() + ".bc";
++    errs() << "[BC] " << Path << "\n";
++    std::error_code EC;
++    raw_fd_ostream out(Path, EC, sys::fs::OF_None);
++    WriteBitcodeToFile(M, out);
++    out.flush();
++    out.close();
++  }
++
 diff --git a/llvm/lib/Transforms/CapabilityLog/CMakeLists.txt b/llvm/lib/Transforms/CapabilityLog/CMakeLists.txt
 new file mode 100644
 index 000000000000..9c4b495f969d
@@ -51,10 +69,10 @@ index 000000000000..9c4b495f969d
 +# using opt, both "-load xxx" and "--load-pass-plugin=xxx" should be used to use cmd arguments
 diff --git a/llvm/lib/Transforms/CapabilityLog/CapabilityLog.cpp b/llvm/lib/Transforms/CapabilityLog/CapabilityLog.cpp
 new file mode 100644
-index 000000000000..0ba22b74fbc8
+index 000000000000..89b912d0b5c2
 --- /dev/null
 +++ b/llvm/lib/Transforms/CapabilityLog/CapabilityLog.cpp
-@@ -0,0 +1,422 @@
+@@ -0,0 +1,590 @@
 +#include "llvm/ADT/APFloat.h"
 +#include "llvm/ADT/StringRef.h"
 +#include "llvm/ADT/Twine.h"
@@ -95,6 +113,7 @@ index 000000000000..0ba22b74fbc8
 +
 +#include <cstddef>
 +#include <cstdint>
++#include <string>
 +#include <unordered_map>
 +#include <unordered_set>
 +#include <vector>
@@ -103,6 +122,12 @@ index 000000000000..0ba22b74fbc8
 +using namespace std;
 +
 +namespace {
++enum LogCapKind : uint8_t {
++    LOG_CAP_KIND_ALLOC = 0,
++    LOG_CAP_KIND_COPY = 1,
++    LOG_CAP_KIND_FUNC = 2,
++};
++
 +struct LLVMCapabilityLogOnFunction : public FunctionPass {
 +public:
 +    static char ID;
@@ -126,22 +151,72 @@ index 000000000000..0ba22b74fbc8
 +            return;
 +        }
 +
++        uint16_t FallbackSiteID = 0;
 +        for (const auto &StructEntry : *JsonObj) {
-+            const json::Array* CopyArr = StructEntry.second.getAsObject()->getArray("copy");
-+            const json::Array* AllocArr = StructEntry.second.getAsObject()->getArray("alloc");
-+            if (CopyArr == nullptr || CopyArr->empty() || AllocArr == nullptr || AllocArr->empty())
++            const json::Object *StructObj = StructEntry.second.getAsObject();
++            if (!StructObj)
++                continue;
++            const json::Array *CopyArr = StructObj->getArray("copy");
++            const json::Array *AllocArr = StructObj->getArray("alloc");
++            const json::Array *FunctionArr = StructObj->getArray("functions");
++            const json::Array *FuncsArr = StructObj->getArray("funcs");
++            const json::Array *TargetFuncsArr = StructObj->getArray("target_funcs");
++            const json::Array *TargetsArr = StructObj->getArray("targets");
++            const json::Array *KernelFuncsArr = StructObj->getArray("kernel_funcs");
++            const json::Array *SiteArr = StructObj->getArray("sites");
++            auto IsEmpty = [](const json::Array *Arr) {
++                return Arr == nullptr || Arr->empty();
++            };
++            if (IsEmpty(CopyArr) && IsEmpty(AllocArr) && IsEmpty(FunctionArr) &&
++                IsEmpty(FuncsArr) && IsEmpty(TargetFuncsArr) && IsEmpty(TargetsArr) &&
++                IsEmpty(KernelFuncsArr) && IsEmpty(SiteArr))
 +                continue;
 +
 +            auto &ObjInf = St2Info[StructEntry.first.str()];
-+            ObjInf.IsBridge = StructEntry.second.getAsObject()->getBoolean("bridge").getValue();
-+            ObjInf.IsRouter = StructEntry.second.getAsObject()->getBoolean("router").getValue();
-+            ObjInf.Index = StructEntry.second.getAsObject()->getInteger("index").getValue();
-+            for (const auto &PathEntry : *CopyArr) {
-+                ObjInf.CopyFuncs.insert(PathEntry.getAsString()->str());
++            ObjInf.IsBridge = StructObj->getBoolean("bridge").getValueOr(false);
++            ObjInf.IsRouter = StructObj->getBoolean("router").getValueOr(false);
++            ObjInf.Index =
++                static_cast<uint8_t>(StructObj->getInteger("index").getValueOr(0));
++            if (SiteArr) {
++                for (const auto &SiteEntry : *SiteArr) {
++                    const json::Object *SiteObj = SiteEntry.getAsObject();
++                    if (!SiteObj)
++                        continue;
++                    const auto Func = SiteObj->getString("func");
++                    const auto Kind = SiteObj->getString("kind");
++                    const auto ID = SiteObj->getInteger("id");
++                    if (!Func || !Kind || !ID)
++                        continue;
++                    string FuncName = Func->str();
++                    uint16_t SiteID = static_cast<uint16_t>(*ID);
++                    addSiteMapping(ObjInf, *Kind, FuncName, SiteID);
++                }
 +            }
-+            for (const auto &PathEntry : *AllocArr) {
-+                ObjInf.AllocFuncs.insert(PathEntry.getAsString()->str());
++            if (CopyArr) {
++                for (const auto &PathEntry : *CopyArr) {
++                    if (!PathEntry.getAsString())
++                        continue;
++                    string FuncName = PathEntry.getAsString()->str();
++                    ObjInf.CopyFuncs.insert(FuncName);
++                    if (!ObjInf.CopySites.count(FuncName))
++                        ObjInf.CopySites[FuncName] = FallbackSiteID++;
++                }
 +            }
++            if (AllocArr) {
++                for (const auto &PathEntry : *AllocArr) {
++                    if (!PathEntry.getAsString())
++                        continue;
++                    string FuncName = PathEntry.getAsString()->str();
++                    ObjInf.AllocFuncs.insert(FuncName);
++                    if (!ObjInf.AllocSites.count(FuncName))
++                        ObjInf.AllocSites[FuncName] = FallbackSiteID++;
++                }
++            }
++            addFunctionFallbacks(FunctionArr, ObjInf, FallbackSiteID);
++            addFunctionFallbacks(FuncsArr, ObjInf, FallbackSiteID);
++            addFunctionFallbacks(TargetFuncsArr, ObjInf, FallbackSiteID);
++            addFunctionFallbacks(TargetsArr, ObjInf, FallbackSiteID);
++            addFunctionFallbacks(KernelFuncsArr, ObjInf, FallbackSiteID);
 +        }
 +    }
 +    
@@ -149,15 +224,23 @@ index 000000000000..0ba22b74fbc8
 +    bool runOnFunction(Function& F) override {
 +        bool Ret = false;
 +        unordered_set<string> StNames;
++        unordered_set<string> TargetStNames;
++
++        if (F.isDeclaration() || F.getName().equals("log_cap"))
++            return false;
 +
 +        // if (F.getName().equals("alloc_msg")) DebugMod = true;
-+        findStructByFunction(F.getName(), StNames);
-+        if (StNames.empty()) {
++        findStructByAllocCopyFunction(F.getName(), StNames);
++        findStructByTargetFunction(F.getName(), TargetStNames);
++        if (StNames.empty() && TargetStNames.empty()) {
 +            DebugMod = false;
 +            return false;
 +        }
 +        errs() << "[*] " << F.getName() << "\n";
 +if (DebugMod) errs() << F << "\n";
++
++        for (const auto &StName : TargetStNames)
++            Ret |= insertFunctionEntry(F, StName);
 +
 +        for (auto &BB : F) {
 +            for (auto &I : BB) {
@@ -171,12 +254,12 @@ index 000000000000..0ba22b74fbc8
 +                    CallFuncName.startswith("k") &&
 +                    !CallFuncName.contains("cache")) {
 +if (DebugMod) errs() << "[CF] " << CallFuncName << "\n";
-+                    Ret = insertAlloc(CI, StNames);
++                    Ret |= insertAlloc(CI, StNames);
 +                }
 +                else if (CallFuncName.contains("memcpy") ||
 +                    CallFuncName.contains("copy_from_user")) {
 +if (DebugMod) errs() << "[CF] " << CallFuncName << "\n";
-+                    Ret = insertCopy(CI, StNames);
++                    Ret |= insertCopy(CI, StNames);
 +                }
 +
 +            }
@@ -188,7 +271,7 @@ index 000000000000..0ba22b74fbc8
 +    }
 +
 +private:
-+    const string JsonPath = "/home/user/Kernel/BridgeRouter/dump/merged.json";
++    const string JsonPath = "../dump/merged.json";
 +    json::Object* JsonObj;
 +
 +    struct ObjectInfo {
@@ -196,8 +279,40 @@ index 000000000000..0ba22b74fbc8
 +        uint8_t Index;
 +        unordered_set<string> CopyFuncs;
 +        unordered_set<string> AllocFuncs;
++        unordered_set<string> TargetFuncs;
++        unordered_map<string, uint16_t> CopySites;
++        unordered_map<string, uint16_t> AllocSites;
++        unordered_map<string, uint16_t> TargetSites;
 +    };
 +    unordered_map<string, struct ObjectInfo> St2Info;
++
++    void addSiteMapping(ObjectInfo &ObjInf, StringRef Kind, const string &FuncName,
++                        uint16_t SiteID) {
++        if (Kind.equals("alloc")) {
++            ObjInf.AllocFuncs.insert(FuncName);
++            ObjInf.AllocSites[FuncName] = SiteID;
++        } else if (Kind.equals("copy")) {
++            ObjInf.CopyFuncs.insert(FuncName);
++            ObjInf.CopySites[FuncName] = SiteID;
++        } else {
++            ObjInf.TargetFuncs.insert(FuncName);
++            ObjInf.TargetSites[FuncName] = SiteID;
++        }
++    }
++
++    void addFunctionFallbacks(const json::Array *FuncArr, ObjectInfo &ObjInf,
++                              uint16_t &FallbackSiteID) {
++        if (!FuncArr)
++            return;
++        for (const auto &PathEntry : *FuncArr) {
++            if (!PathEntry.getAsString())
++                continue;
++            string FuncName = PathEntry.getAsString()->str();
++            ObjInf.TargetFuncs.insert(FuncName);
++            if (!ObjInf.TargetSites.count(FuncName))
++                ObjInf.TargetSites[FuncName] = FallbackSiteID++;
++        }
++    }
 +
 +    void findObjSources(Value* V, std::vector<llvm::Value *> &SrcSet) {
 +        if (dyn_cast<Constant>(V) != nullptr) {
@@ -360,8 +475,10 @@ index 000000000000..0ba22b74fbc8
 +            Type *Int8PtrTy = Type::getInt8PtrTy(Context);
 +            Type *Int64Ty = Type::getInt64Ty(Context);
 +            Type *UInt8Ty = Type::getInt8Ty(Context);
++            Type *UInt16Ty = Type::getInt16Ty(Context);
 +
-+            std::vector<Type *> ParamTypes = {Int8PtrTy, Int8PtrTy, Int64Ty, UInt8Ty};
++            std::vector<Type *> ParamTypes = {Int8PtrTy, Int8PtrTy, Int64Ty,
++                                              UInt8Ty, UInt16Ty, UInt8Ty};
 +            FunctionType *FuncType = FunctionType::get(VoidTy, ParamTypes, false);
 +
 +            LogCapFunction = M.getOrInsertFunction("log_cap", FuncType);
@@ -370,7 +487,26 @@ index 000000000000..0ba22b74fbc8
 +        return LogCapFunction;
 +    }
 +
-+    void insertCall(CallInst *CI, Value *Dst, Value *Src, Value *Len, const string &StName) {
++    uint16_t getSiteID(const string &StName, const StringRef FuncName,
++                       LogCapKind Kind) {
++        string Name = FuncName.str();
++        auto &Info = St2Info[StName];
++        unordered_map<string, uint16_t> *Sites;
++        if (Kind == LOG_CAP_KIND_ALLOC)
++            Sites = &Info.AllocSites;
++        else if (Kind == LOG_CAP_KIND_COPY)
++            Sites = &Info.CopySites;
++        else
++            Sites = &Info.TargetSites;
++
++        auto It = Sites->find(Name);
++        if (It != Sites->end())
++            return It->second;
++        return Info.Index;
++    }
++
++    void insertCall(CallInst *CI, Value *Dst, Value *Src, Value *Len,
++                    const string &StName, LogCapKind Kind) {
 +        BasicBlock *BB = CI->getParent();
 +        Module *M = BB->getModule();
 +        LLVMContext &Context = M->getContext();
@@ -380,13 +516,51 @@ index 000000000000..0ba22b74fbc8
 +
 +        FunctionCallee LogCapFunction = getLogCapFunction(*M);
 +
-+        IntegerType *UInt8Ty = IntegerType::getInt16Ty(CI->getContext());
++        IntegerType *UInt8Ty = IntegerType::getInt8Ty(CI->getContext());
++        IntegerType *UInt16Ty = IntegerType::getInt16Ty(CI->getContext());
 +        unsigned Index = St2Info[StName].Index;
-+        ConstantInt *Hash = ConstantInt::get(UInt8Ty, Index, false);
-+        errs() << "[H] " << StName << ":#" << Index << "\n";
++        uint16_t SiteID = getSiteID(StName, CI->getFunction()->getName(), Kind);
++        ConstantInt *StIndexArg = ConstantInt::get(UInt8Ty, Index, false);
++        ConstantInt *SiteIDArg = ConstantInt::get(UInt16Ty, SiteID, false);
++        ConstantInt *KindArg = ConstantInt::get(UInt8Ty, Kind, false);
++        errs() << "[H] " << StName << ":#" << Index << ":site#" << SiteID << "\n";
 +
-+        std::vector<Value *> Args = {Dst, Src, Len, Hash};
++        std::vector<Value *> Args = {Dst, Src, Len, StIndexArg, SiteIDArg, KindArg};
 +        Builder.CreateCall(LogCapFunction, Args);
++    }
++
++    bool insertFunctionEntry(Function &F, const string &StName) {
++        if (F.empty())
++            return false;
++
++        auto IP = F.getEntryBlock().getFirstInsertionPt();
++        if (IP == F.getEntryBlock().end())
++            return false;
++
++        Module *M = F.getParent();
++        LLVMContext &Context = M->getContext();
++        IRBuilder<> Builder(&*IP);
++        FunctionCallee LogCapFunction = getLogCapFunction(*M);
++
++        PointerType *PointerTy = PointerType::getInt8PtrTy(Context);
++        IntegerType *UInt8Ty = IntegerType::getInt8Ty(Context);
++        IntegerType *UInt16Ty = IntegerType::getInt16Ty(Context);
++        Type *Int64Ty = Type::getInt64Ty(Context);
++
++        unsigned Index = St2Info[StName].Index;
++        uint16_t SiteID = getSiteID(StName, F.getName(), LOG_CAP_KIND_FUNC);
++        Value *NullPtr = Constant::getNullValue(PointerTy);
++        Value *Len = ConstantInt::get(Int64Ty, 0, false);
++        ConstantInt *StIndexArg = ConstantInt::get(UInt8Ty, Index, false);
++        ConstantInt *SiteIDArg = ConstantInt::get(UInt16Ty, SiteID, false);
++        ConstantInt *KindArg = ConstantInt::get(UInt8Ty, LOG_CAP_KIND_FUNC, false);
++        errs() << "[H] " << StName << ":#" << Index << ":site#" << SiteID
++               << ":entry\n";
++
++        std::vector<Value *> Args = {NullPtr, NullPtr, Len, StIndexArg, SiteIDArg,
++                                     KindArg};
++        Builder.CreateCall(LogCapFunction, Args);
++        return true;
 +    }
 +
 +    bool insertAlloc(CallInst *CI, const unordered_set<string> &StNames) {
@@ -399,7 +573,7 @@ index 000000000000..0ba22b74fbc8
 +        Value *Src = Constant::getNullValue(PointerTy);
 +        Value *Len = CI->getArgOperand(0);
 +
-+        insertCall(CI, Dst, Src, Len, StName);
++        insertCall(CI, Dst, Src, Len, StName, LOG_CAP_KIND_ALLOC);
 +        return true;
 +    }
 +
@@ -412,11 +586,12 @@ index 000000000000..0ba22b74fbc8
 +        Value *Src = CI->getArgOperand(1);
 +        Value *Len = CI->getArgOperand(2);
 +
-+        insertCall(CI, Dst, Src, Len, StName);
++        insertCall(CI, Dst, Src, Len, StName, LOG_CAP_KIND_COPY);
 +        return true;
 +    }
 +
-+    void findStructByFunction(const StringRef FuncName, unordered_set<string> &StNames) const {
++    void findStructByAllocCopyFunction(const StringRef FuncName,
++                                       unordered_set<string> &StNames) const {
 +        for (auto s2i : St2Info) {
 +            for (auto &Func : s2i.second.CopyFuncs) {
 +                if (FuncName.equals(Func)) {
@@ -424,6 +599,18 @@ index 000000000000..0ba22b74fbc8
 +                }
 +            }
 +            for (auto &Func : s2i.second.AllocFuncs) {
++                if (FuncName.equals(Func)) {
++                    StNames.insert(s2i.first);
++                }
++            }
++        }
++        return;
++    }
++
++    void findStructByTargetFunction(const StringRef FuncName,
++                                    unordered_set<string> &StNames) const {
++        for (auto s2i : St2Info) {
++            for (auto &Func : s2i.second.TargetFuncs) {
 +                if (FuncName.equals(Func)) {
 +                    StNames.insert(s2i.first);
 +                }
@@ -476,37 +663,3 @@ index 000000000000..0ba22b74fbc8
 +//        llvm::legacy::PassManagerBase &PM) { PM.add(new LLVMCapabilityLogOnModule()); });
 +
 +// } // namespace
-+
-diff --git a/llvm/lib/Transforms/IPO/DeadArgumentElimination.cpp b/llvm/lib/Transforms/IPO/DeadArgumentElimination.cpp
-index 2a6e38b0437f..c97a2c2b3889 100644
---- a/llvm/lib/Transforms/IPO/DeadArgumentElimination.cpp
-+++ b/llvm/lib/Transforms/IPO/DeadArgumentElimination.cpp
-@@ -50,6 +50,10 @@
- #include <utility>
- #include <vector>
- 
-+#include "llvm/Bitcode/BitcodeWriter.h"
-+#include "llvm/Support/ToolOutputFile.h"
-+#include "llvm/Support/FileSystem.h"
-+
- using namespace llvm;
- 
- #define DEBUG_TYPE "deadargelim"
-@@ -1088,6 +1092,17 @@ bool DeadArgumentEliminationPass::RemoveDeadStuffFromFunction(Function *F) {
- 
- PreservedAnalyses DeadArgumentEliminationPass::run(Module &M,
-                                                    ModuleAnalysisManager &) {
-+  std::string FileName = M.getSourceFileName();
-+  if (FileName.find(".c") != FileName.npos) {
-+    std::string Path = M.getSourceFileName() + ".bc";
-+    errs() << "[BC] " << Path << "\n";
-+    std::error_code EC;
-+    raw_fd_ostream out(Path, EC, sys::fs::OF_None);
-+    WriteBitcodeToFile(M, out);
-+    out.flush();
-+    out.close();
-+  }
-+
-   bool Changed = false;
- 
-   // First pass: Do a simple check to see if any functions can have their "..."

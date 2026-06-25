@@ -12,9 +12,9 @@ import (
 	"math/rand"
 	"net"
 	"os"
-	"strings"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -740,10 +740,10 @@ func checkCover(target *prog.Target, data []byte, cover []uint32, cfg *mgrconfig
 			}
 
 			var sb strings.Builder
-			
+
 			title := fmt.Sprintf("KCOV: %v[%v]\n\n", cov, prio)
 			sb.WriteString(title)
-			sb.WriteString(fmt.Sprintf("Len(Calls): %d\n", len(p.Calls)))	
+			sb.WriteString(fmt.Sprintf("Len(Calls): %d\n", len(p.Calls)))
 			for _, call := range p.Calls {
 				sb.WriteString(fmt.Sprintf("->Comment(Call): %s\n", call.Comment))
 				sb.WriteString(fmt.Sprintf("->Syscall {Name: %s, CallName: %s}\n",
@@ -752,7 +752,7 @@ func checkCover(target *prog.Target, data []byte, cover []uint32, cfg *mgrconfig
 					sb.WriteString(fmt.Sprintf("---> Arg {Name: %s, Type: %s}\n", arg.Name, arg.String()))
 				}
 			}
-			
+
 			coverdir := filepath.Join(cfg.Workdir, "covers")
 			osutil.MkdirAll(coverdir)
 			sig := hash.Hash([]byte(title))
@@ -1417,6 +1417,35 @@ func (mgr *Manager) machineChecked(a *rpctype.CheckArgs, enabledSyscalls map[*pr
 }
 
 const stMaxNum = 256
+const siteMaxNum = 256
+
+type capSiteMeta struct {
+	ID          int    `json:"id"`
+	Struct      string `json:"struct,omitempty"`
+	StructIndex int    `json:"struct_index,omitempty"`
+	Kind        string `json:"kind,omitempty"`
+	Func        string `json:"func,omitempty"`
+}
+
+type capSiteCallMeta struct {
+	capSiteMeta
+	CallID int    `json:"call_id"`
+	Call   string `json:"call"`
+}
+
+type mergedStructMeta struct {
+	Index int `json:"index"`
+	Sites []struct {
+		ID   int    `json:"id"`
+		Kind string `json:"kind"`
+		Func string `json:"func"`
+	} `json:"sites"`
+}
+
+var (
+	capSiteMetaOnce sync.Once
+	capSiteMetas    map[int]capSiteMeta
+)
 
 func saveProgData(dir string, filename string, data []byte) error {
 	path := filepath.Join(dir, filename)
@@ -1430,14 +1459,109 @@ func saveProgData(dir string, filename string, data []byte) error {
 }
 
 func isBitSet(bitVec []uint8, index int) bool {
+	if index/8 >= len(bitVec) {
+		return false
+	}
 	return (bitVec[index/8] & (1 << (index % 8))) != 0
 }
 
+func loadCapSiteMetas(workdir string) map[int]capSiteMeta {
+	capSiteMetaOnce.Do(func() {
+		capSiteMetas = make(map[int]capSiteMeta)
+		for _, path := range mergedJSONPaths(workdir) {
+			if path == "" {
+				continue
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				continue
+			}
+			var merged map[string]mergedStructMeta
+			if err := json.Unmarshal(data, &merged); err != nil {
+				continue
+			}
+			for stName, stMeta := range merged {
+				for _, site := range stMeta.Sites {
+					capSiteMetas[site.ID] = capSiteMeta{
+						ID:          site.ID,
+						Struct:      stName,
+						StructIndex: stMeta.Index,
+						Kind:        site.Kind,
+						Func:        site.Func,
+					}
+				}
+			}
+			return
+		}
+	})
+	return capSiteMetas
+}
+
+func mergedJSONPaths(workdir string) []string {
+	return []string{
+		os.Getenv("BRIDGEROUTER_MERGED_JSON"),
+		"/home/user/Kernel/BridgeRouter/dump/merged.json",
+		filepath.Join(workdir, "merged.json"),
+		filepath.Join(workdir, "..", "dump", "merged.json"),
+		"dump/merged.json",
+		"../dump/merged.json",
+	}
+}
+
+func capSiteMetaFor(metas map[int]capSiteMeta, siteID int) capSiteMeta {
+	meta, ok := metas[siteID]
+	if !ok {
+		return capSiteMeta{ID: siteID}
+	}
+	return meta
+}
+
+func safePathElem(name string) string {
+	if name == "" {
+		return "unknown"
+	}
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '_' || r == '-' || r == '.':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	out := b.String()
+	if len(out) > 96 {
+		out = out[:96]
+	}
+	return out
+}
+
+func siteDirName(siteID int, meta capSiteMeta) string {
+	if meta.Func == "" {
+		return fmt.Sprintf("site_%d", siteID)
+	}
+	return fmt.Sprintf("site_%d_%s_%s", siteID, safePathElem(meta.Kind), safePathElem(meta.Func))
+}
+
+func saveJSONData(dir string, filename string, value interface{}) error {
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return err
+	}
+	return saveProgData(dir, filename, data)
+}
+
 func parseBitVec(inp *rpctype.Input, workdir string) {
-	corpdir := filepath.Join(workdir, "corps") 
+	corpdir := filepath.Join(workdir, "corps")
 	for i := 0; i < stMaxNum; i++ {
 		indexDir := filepath.Join(corpdir, fmt.Sprintf("st_%d", i))
-		
+
 		if isBitSet(inp.AllcBitVec, i) {
 			allocDir := filepath.Join(indexDir, "alloc")
 			if err := saveProgData(allocDir, "prog.bin", inp.Prog); err != nil {
@@ -1450,6 +1574,38 @@ func parseBitVec(inp *rpctype.Input, workdir string) {
 			if err := saveProgData(copyDir, "prog.bin", inp.Prog); err != nil {
 				fmt.Printf("failed to save copy file: %v\n", err)
 			}
+		}
+	}
+
+	siteMetas := loadCapSiteMetas(workdir)
+	for i := 0; i < siteMaxNum; i++ {
+		if !isBitSet(inp.SiteBitVec, i) {
+			continue
+		}
+		meta := capSiteMetaFor(siteMetas, i)
+		siteDir := filepath.Join(corpdir, siteDirName(i, meta))
+		if err := saveProgData(siteDir, "prog.bin", inp.Prog); err != nil {
+			fmt.Printf("failed to save site file: %v\n", err)
+		}
+		if err := saveJSONData(siteDir, "meta.json", meta); err != nil {
+			fmt.Printf("failed to save site metadata: %v\n", err)
+		}
+	}
+	for _, hit := range inp.SiteCalls {
+		meta := capSiteMetaFor(siteMetas, hit.SiteID)
+		siteDir := filepath.Join(corpdir, siteDirName(hit.SiteID, meta))
+		callDir := filepath.Join(siteDir, "calls")
+		callName := fmt.Sprintf("call_%d_%s", hit.CallID, safePathElem(hit.Call))
+		if err := saveProgData(callDir, callName+".prog", inp.Prog); err != nil {
+			fmt.Printf("failed to save site call file: %v\n", err)
+		}
+		callMeta := capSiteCallMeta{
+			capSiteMeta: meta,
+			CallID:      hit.CallID,
+			Call:        hit.Call,
+		}
+		if err := saveJSONData(callDir, callName+".json", callMeta); err != nil {
+			fmt.Printf("failed to save site call metadata: %v\n", err)
 		}
 	}
 }

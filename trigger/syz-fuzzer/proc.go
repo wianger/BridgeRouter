@@ -9,6 +9,7 @@ import (
 	"math/rand"
 	"os"
 	"runtime/debug"
+	"sort"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -99,7 +100,7 @@ func (proc *Proc) loop() {
 	}
 }
 
-const bitvecSize = 32;
+const bitvecSize = 32
 
 func (proc *Proc) triageInput(item *WorkTriage) {
 	log.Logf(1, "#%v: triaging type=%x", proc.pid, item.flags)
@@ -127,6 +128,8 @@ func (proc *Proc) triageInput(item *WorkTriage) {
 	rawCover := []uint32{}
 	allcBitVec := [bitvecSize]uint8{}
 	copyBitVec := [bitvecSize]uint8{}
+	siteBitVec := [bitvecSize]uint8{}
+	siteCalls := make(map[siteCallKey]rpctype.SiteCall)
 	for i := 0; i < signalRuns; i++ {
 		info := proc.executeRaw(proc.execOptsCover, item.p, StatTriage)
 		if !reexecutionSuccess(info, &item.info, item.call) {
@@ -142,7 +145,8 @@ func (proc *Proc) triageInput(item *WorkTriage) {
 			rawCover = append([]uint32{}, thisCover...)
 		}
 		newSignal = newSignal.Intersection(thisSignal)
-		hasAlloc, hasCopy := getAllocAndCopy(info, allcBitVec[:], copyBitVec[:])
+		hasAlloc, hasCopy, hasSite := getAllocCopyAndSites(info, allcBitVec[:], copyBitVec[:], siteBitVec[:])
+		collectSiteCalls(item.p, info, siteCalls)
 		if hasAlloc {
 			item.p.Stage = prog.StageAllc
 		} else if hasCopy {
@@ -152,7 +156,7 @@ func (proc *Proc) triageInput(item *WorkTriage) {
 		}
 		// Without !minimized check manager starts losing some considerable amount
 		// of coverage after each restart. Mechanics of this are not completely clear.
-		if newSignal.Empty() && item.flags&ProgMinimized == 0 && !hasAlloc && !hasCopy {
+		if newSignal.Empty() && item.flags&ProgMinimized == 0 && !hasAlloc && !hasCopy && !hasSite {
 			return
 		}
 		inputCover.Merge(thisCover)
@@ -180,14 +184,16 @@ func (proc *Proc) triageInput(item *WorkTriage) {
 
 	log.Logf(2, "added new input for %v to corpus:\n%s", logCallName, data)
 	proc.fuzzer.sendInputToManager(rpctype.Input{
-		Call:     callName,
-		CallID:   item.call,
-		Prog:     data,
-		Signal:   inputSignal.Serialize(),
-		Cover:    inputCover.Serialize(),
-		RawCover: rawCover,
+		Call:       callName,
+		CallID:     item.call,
+		Prog:       data,
+		Signal:     inputSignal.Serialize(),
+		Cover:      inputCover.Serialize(),
+		RawCover:   rawCover,
 		AllcBitVec: allcBitVec[:],
 		CopyBitVec: copyBitVec[:],
+		SiteBitVec: siteBitVec[:],
+		SiteCalls:  sortedSiteCalls(siteCalls),
 	})
 
 	proc.fuzzer.addInputToCorpus(item.p, inputSignal, sig)
@@ -220,19 +226,71 @@ func getSignalAndCover(p *prog.Prog, info *ipc.ProgInfo, call int) (signal.Signa
 	return signal.FromRaw(inf.Signal, signalPrio(p, inf, call)), inf.Cover
 }
 
-func getAllocAndCopy(info *ipc.ProgInfo, allcArr []uint8, copyArr []uint8) (hasAllc bool, hasCopy bool) {
+type siteCallKey struct {
+	siteID int
+	callID int
+}
+
+func getAllocCopyAndSites(info *ipc.ProgInfo, allcArr []uint8, copyArr []uint8, siteArr []uint8) (hasAllc bool, hasCopy bool, hasSite bool) {
 	hasAllc = false
-	for i:=0; i<bitvecSize; i++ {
+	for i := 0; i < bitvecSize; i++ {
 		if info.AllcBitVec[i] != 0 {
 			hasAllc = true
-			allcArr[i] = info.AllcBitVec[i]
+			allcArr[i] |= info.AllcBitVec[i]
 		}
 		if info.CopyBitVec[i] != 0 {
 			hasCopy = true
-			allcArr[i] = info.CopyBitVec[i]
+			copyArr[i] |= info.CopyBitVec[i]
+		}
+		if info.SiteBitVec[i] != 0 {
+			hasSite = true
+			siteArr[i] |= info.SiteBitVec[i]
 		}
 	}
 	return
+}
+
+func collectSiteCalls(p *prog.Prog, info *ipc.ProgInfo, hits map[siteCallKey]rpctype.SiteCall) {
+	for callID := range info.Calls {
+		if callID >= len(p.Calls) {
+			continue
+		}
+		callInfo := &info.Calls[callID]
+		if callInfo.Flags&ipc.CallFinished == 0 {
+			continue
+		}
+		callName := p.Calls[callID].Meta.Name
+		for siteID := 0; siteID < bitvecSize*8; siteID++ {
+			if !isBitSet(callInfo.SiteBitVec[:], siteID) {
+				continue
+			}
+			key := siteCallKey{siteID: siteID, callID: callID}
+			hits[key] = rpctype.SiteCall{
+				SiteID: siteID,
+				CallID: callID,
+				Call:   callName,
+			}
+		}
+	}
+}
+
+func isBitSet(bitVec []uint8, index int) bool {
+	byteIndex := index / 8
+	return byteIndex < len(bitVec) && bitVec[byteIndex]&(1<<(index%8)) != 0
+}
+
+func sortedSiteCalls(hits map[siteCallKey]rpctype.SiteCall) []rpctype.SiteCall {
+	calls := make([]rpctype.SiteCall, 0, len(hits))
+	for _, hit := range hits {
+		calls = append(calls, hit)
+	}
+	sort.Slice(calls, func(i, j int) bool {
+		if calls[i].SiteID != calls[j].SiteID {
+			return calls[i].SiteID < calls[j].SiteID
+		}
+		return calls[i].CallID < calls[j].CallID
+	})
+	return calls
 }
 
 func (proc *Proc) smashInput(item *WorkSmash) {
