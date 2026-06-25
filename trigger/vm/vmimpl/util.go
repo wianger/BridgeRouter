@@ -28,7 +28,6 @@ func WaitForSSH(debug bool, timeout time.Duration, addr, sshKey, sshUser, OS str
 	if OS == targets.Windows {
 		pwd = "dir"
 	}
-	connectTimeout := time.Minute
 	startTime := time.Now()
 	SleepInterruptible(5 * time.Second)
 	for {
@@ -39,11 +38,11 @@ func WaitForSSH(debug bool, timeout time.Duration, addr, sshKey, sshUser, OS str
 		case <-Shutdown:
 			return fmt.Errorf("shutdown in progress")
 		}
-		args := append(SSHArgsWithConnectTimeout(debug, sshKey, port, connectTimeout), sshUser+"@"+addr, pwd)
+		args := append(SSHArgs(debug, sshKey, port), sshUser+"@"+addr, pwd)
 		if debug {
 			log.Logf(0, "running ssh: %#v", args)
 		}
-		_, err := osutil.RunCmd(connectTimeout+30*time.Second, "", "ssh", args...)
+		_, err := osutil.RunCmd(time.Minute, "", "ssh", args...)
 		if err == nil {
 			return nil
 		}
@@ -57,22 +56,18 @@ func WaitForSSH(debug bool, timeout time.Duration, addr, sshKey, sshUser, OS str
 }
 
 func SSHArgs(debug bool, sshKey string, port int) []string {
-	return SSHArgsWithConnectTimeout(debug, sshKey, port, 10*time.Second)
-}
-
-func SSHArgsWithConnectTimeout(debug bool, sshKey string, port int, connectTimeout time.Duration) []string {
-	return sshArgs(debug, sshKey, "-p", port, 0, connectTimeout)
+	return sshArgs(debug, sshKey, "-p", port, 0)
 }
 
 func SSHArgsForward(debug bool, sshKey string, port, forwardPort int) []string {
-	return sshArgs(debug, sshKey, "-p", port, forwardPort, 10*time.Second)
+	return sshArgs(debug, sshKey, "-p", port, forwardPort)
 }
 
 func SCPArgs(debug bool, sshKey string, port int) []string {
-	return sshArgs(debug, sshKey, "-P", port, 0, 10*time.Second)
+	return sshArgs(debug, sshKey, "-P", port, 0)
 }
 
-func sshArgs(debug bool, sshKey, portArg string, port, forwardPort int, connectTimeout time.Duration) []string {
+func sshArgs(debug bool, sshKey, portArg string, port, forwardPort int) []string {
 	args := []string{
 		portArg, fmt.Sprint(port),
 		"-F", "/dev/null",
@@ -80,7 +75,7 @@ func sshArgs(debug bool, sshKey, portArg string, port, forwardPort int, connectT
 		"-o", "BatchMode=yes",
 		"-o", "IdentitiesOnly=yes",
 		"-o", "StrictHostKeyChecking=no",
-		"-o", fmt.Sprintf("ConnectTimeout=%d", int(connectTimeout/time.Second)),
+		"-o", "ConnectTimeout=10",
 	}
 	if sshKey != "" {
 		args = append(args, "-i", sshKey)

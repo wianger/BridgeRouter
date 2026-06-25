@@ -4,7 +4,6 @@
 package mgrconfig
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -205,10 +204,6 @@ func Complete(cfg *Config) error {
 func (cfg *Config) initTimeouts() {
 	slowdown := 1
 	switch {
-	case cfg.Type == "qemu" && cfg.qemuUsesTCG():
-		// Same-arch TCG is still much slower than KVM, but it is not covered by
-		// the cross-arch emulation check below.
-		slowdown = 10
 	case cfg.Type == "qemu" && runtime.GOARCH != cfg.SysTarget.Arch && runtime.GOARCH != cfg.SysTarget.VMArch:
 		// Assuming qemu emulation.
 		// Quick tests of mmap syscall on arm64 show ~9x slowdown.
@@ -221,16 +216,6 @@ func (cfg *Config) initTimeouts() {
 	}
 	// Note: we could also consider heavy debug tools (KASAN/KMSAN/KCSAN/KMEMLEAK) if necessary.
 	cfg.Timeouts = cfg.SysTarget.Timeouts(slowdown)
-}
-
-func (cfg *Config) qemuUsesTCG() bool {
-	var vm struct {
-		QemuArgs string `json:"qemu_args"`
-	}
-	if err := json.Unmarshal(cfg.VM, &vm); err != nil {
-		return false
-	}
-	return strings.Contains(strings.ToLower(vm.QemuArgs), "tcg")
 }
 
 func checkNonEmpty(fields ...string) error {
