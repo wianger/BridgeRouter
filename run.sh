@@ -1,7 +1,5 @@
 #!/bin/bash
 
-set -e
-
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
@@ -12,71 +10,51 @@ HOME=$(pwd)
 KERNEL_SRC="$HOME/linux"
 IDNT_SRC="$HOME/identifier"
 TRIG_SRC="$HOME/trigger"
-TOOL_SRC="$HOME/tools"
-LLVM_INSTALL="$HOME/opt/llvm"
-KERNEL_VERSION="v5.11"
 
-apply_log_cap_patch() {
-    if grep -q "sys_get_log_cap" "$KERNEL_SRC/arch/x86/entry/syscalls/syscall_64.tbl" &&
-       grep -q "log_cap.o" "$KERNEL_SRC/kernel/Makefile" &&
-       [ -f "$KERNEL_SRC/kernel/log_cap.c" ]; then
-        return
-    fi
-
-    patch -p1 -d "$KERNEL_SRC" < "$TOOL_SRC/linux-log-cap.patch"
-}
-
-rebuild_kernel() {
-    echo -e "${BLUE}==> Rebuilding Linux kernel with identifier output...${NC}"
-
-    cd "$KERNEL_SRC" || exit 1
-    git checkout "$KERNEL_VERSION"
-    make mrproper
-    git checkout -- Makefile
-    patch -p1 -d "$KERNEL_SRC" < "$TOOL_SRC/linux-makefile.patch"
-    apply_log_cap_patch
-    cp "$TOOL_SRC/linux_config" .config
-    make olddefconfig LLVM="$LLVM_INSTALL/bin/"
-    make LLVM="$LLVM_INSTALL/bin/" -j"$(nproc)" bzImage 2> err
-
-    echo -e "${GREEN}Kernel rebuild completed successfully.${NC}"
-}
-
-run_identifier() {
+run_graph() {
     echo -e "${BLUE}==> Starting identifier tool...${NC}"
-    output_dir="$HOME/dump"
-    mkdir -p "$output_dir"
+    output_dir="$HOME/datalog/out/graph"
+    facts_dir="$HOME/datalog/out/facts"
+    mkdir -p "$output_dir" "$facts_dir"
+
+    echo -e "${BLUE}==> Generating graph...${NC}"
 
     $IDNT_SRC/build/lib/identifier \
         -debug-verbose 0 \
-        -dump-keystructs \
+        -dump-graph \
+        -ignore-reachable \
         -output-dir "$output_dir" \
-        $(find "${KERNEL_SRC}" -name "*.c.bc") \
-        2> $IDNT_SRC/err
+        $(find "${KERNEL_SRC}" -name "*.c.bc")
+        # "${KERNEL_SRC}/net/core/skbuff.c.bc" \
+        # "${KERNEL_SRC}/fs/pipe.c.bc" \
+        # "${KERNEL_SRC}/ipc/msg.c.bc" \
+        # "${KERNEL_SRC}/ipc/msgutil.c.bc" \
+        2> "$output_dir/identifier.err"
 
-    echo -e "${GREEN}Identifier tool execution completed.${NC}"
+    echo -e "${GREEN}Graph generation completed.${NC}"
 
-    echo -e "${BLUE}==> Merging output files...${NC}"
-    cp "$HOME/tools/merge.py" "$output_dir"
-    cd "$output_dir" || exit 1
-    python3 merge.py $KERNEL_SRC
+    echo -e "${BLUE}==> Formatting graph.json...${NC}"
+    python3 "$HOME/format_graph_json.py" \
+        --graph "$output_dir/graph.json" \
+        --in-place
 
-    merged_file="$output_dir/merged.json"
-    if [ -f "$merged_file" ]; then
-        echo -e "${GREEN}Output file has been successfully merged: $merged_file${NC}"
-    else
-        echo -e "${RED}Error: merged.json was not generated.${NC}"
-        exit 1
-    fi
+    echo -e "${BLUE}==> Converting graph.json to Souffle facts...${NC}"
+    python3 "$HOME/graph_to_facts.py" \
+        --graph "$output_dir/graph.json" \
+        --out "$facts_dir"
 
-    rebuild_kernel
+    echo -e "${GREEN}Pipeline completed. Facts at: ${facts_dir}${NC}"
 }
 
 run_trigger() {
     echo -e "${BLUE}==> Running trigger tool...${NC}"
 
+    export GOROOT=/home/user/go
+    export GOPATH=/home/user/gopath
+    export PATH="$GOROOT/bin:$PATH"
+
     cd "$TRIG_SRC" || exit 1
-    ./bin/syz-manager -debug -config "$HOME/tools/default.cfg"
+    ./bin/syz-manager -config my.cfg
 
     echo -e "${GREEN}Trigger tool execution completed.${NC}"
 }
@@ -85,8 +63,8 @@ show_help() {
     echo -e "${YELLOW}Usage: $0 <tool>${NC}"
     echo ""
     echo -e "${GREEN}Tools:${NC}"
-    echo -e "  ${BLUE}identifier${NC}    Analyze the kernel source and identify specific objects."
-    echo -e "  ${BLUE}trigger${NC}       Generate code to trigger specific kernel objects based on identifier output."
+    echo -e "  ${BLUE}graph${NC}         Generate graph.json + Souffle facts"
+    echo -e "  ${BLUE}trigger${NC}       Run syzkaller fuzzer"
     exit 1
 }
 
@@ -96,8 +74,8 @@ if [ $# -eq 0 ]; then
 fi
 
 case "$1" in
-    identifier)
-        run_identifier
+    graph)
+        run_graph
         ;;
     trigger)
         run_trigger

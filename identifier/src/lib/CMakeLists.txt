@@ -5,7 +5,6 @@ set (KASource
   CallGraph.cc
   AllocAnalyzer.cc
   CopyAnalyzer.cc
-  StructChecker.cc
   PointerAnalysis.cc
   PermissionAnalysis.cc
 )

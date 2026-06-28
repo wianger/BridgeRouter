@@ -1,25 +1,25 @@
 #ifndef _GLOBAL_H
 #define _GLOBAL_H
 
+#include <llvm/IR/DebugInfo.h>
+#include <llvm/IR/Module.h>
+#include <llvm/IR/Instructions.h>
 #include <llvm/ADT/DenseMap.h>
 #include <llvm/ADT/SmallPtrSet.h>
 #include <llvm/ADT/StringExtras.h>
-#include <llvm/Analysis/AliasAnalysis.h>
-#include <llvm/IR/DebugInfo.h>
-#include <llvm/IR/Instructions.h>
-#include <llvm/IR/Module.h>
-#include <llvm/Support/CommandLine.h>
 #include <llvm/Support/Path.h>
 #include <llvm/Support/raw_ostream.h>
+#include <llvm/Support/CommandLine.h>
+#include <llvm/Analysis/AliasAnalysis.h>
 
-#include <fstream>
-#include <iostream>
 #include <map>
+#include <unordered_map>
 #include <set>
+#include <unordered_set>
+#include <iostream>
+#include <fstream>
 #include <sstream>
 #include <string>
-#include <unordered_map>
-#include <unordered_set>
 
 #include "Common.h"
 #include "StructAnalyzer.h"
@@ -28,18 +28,18 @@
 using namespace llvm;
 using namespace std;
 
-typedef std::vector<std::pair<llvm::Module *, llvm::StringRef>> ModuleList;
-typedef std::unordered_map<llvm::Module *, llvm::StringRef> ModuleMap;
-typedef std::unordered_map<std::string, llvm::Function *> FuncMap;
-typedef std::unordered_map<std::string, llvm::GlobalVariable *> GObjMap;
+typedef std::vector< std::pair<llvm::Module*, llvm::StringRef> > ModuleList;
+typedef std::unordered_map<llvm::Module*, llvm::StringRef> ModuleMap;
+typedef std::unordered_map<std::string, llvm::Function*> FuncMap;
+typedef std::unordered_map<std::string, llvm::GlobalVariable*> GObjMap;
 
 /****************** Call Graph **************/
-typedef unordered_map<string, llvm::Function *> NameFuncMap;
-typedef llvm::SmallPtrSet<llvm::CallInst *, 8> CallInstSet;
-typedef llvm::SmallPtrSet<llvm::Function *, 32> FuncSet;
+typedef unordered_map<string, llvm::Function*> NameFuncMap;
+typedef llvm::SmallPtrSet<llvm::CallInst*, 8> CallInstSet;
+typedef llvm::SmallPtrSet<llvm::Function*, 32> FuncSet;
 typedef std::unordered_map<std::string, FuncSet> FuncPtrMap;
-typedef llvm::DenseMap<llvm::Function *, CallInstSet> CallerMap;
-typedef llvm::DenseMap<llvm::CallInst *, FuncSet> CalleeMap;
+typedef llvm::DenseMap<llvm::Function*, CallInstSet> CallerMap;
+typedef llvm::DenseMap<llvm::CallInst*, FuncSet> CalleeMap;
 typedef unordered_map<std::string, FuncSet> HookMap;
 /****************** end Call Graph **************/
 
@@ -51,17 +51,18 @@ typedef unordered_map<Function *, AAResults *> FuncAAResultsMap;
 
 /****************** Key Object Identification **************/
 
-typedef std::unordered_map<std::string, StructInfo *> KeyStructMap;
 
-typedef llvm::SmallPtrSet<llvm::Instruction *, 32> InstSet;
+typedef std::unordered_map<std::string, StructInfo*> KeyStructMap;
+
+typedef llvm::SmallPtrSet<llvm::Instruction*, 32> InstSet;
 typedef std::unordered_map<std::string, InstSet> InstMap;
 typedef std::unordered_map<std::string, FuncSet> SyscallMap;
 
-typedef llvm::SmallPtrSet<llvm::Module *, 32> ModuleSet;
-typedef std::unordered_map<std::string, ModuleSet> StructModuleMap;
+typedef llvm::SmallPtrSet<llvm::Module*, 32> ModuleSet;
+typedef std::unordered_map<std::string, ModuleSet> StructModuleMap; 
 
-typedef llvm::SmallPtrSet<llvm::StructType *, 32> StructTypeSet;
-typedef llvm::DenseMap<llvm::Module *, StructTypeSet> ModuleStructMap;
+typedef llvm::SmallPtrSet<llvm::StructType*, 32> StructTypeSet;
+typedef llvm::DenseMap<llvm::Module*, StructTypeSet> ModuleStructMap;
 
 typedef std::unordered_map<std::string, InstSet> KeyStructList;
 
@@ -74,20 +75,21 @@ typedef std::unordered_map<unsigned, InstSet> StoreMap;
 /**************** End Key Object Evaluation ************/
 
 class GlobalContext {
- private:
+private:
   // pass specific data
-  std::map<std::string, void *> PassData;
+  std::map<std::string, void*> PassData;
 
- public:
-  bool add(std::string name, void *data) {
-    if (PassData.find(name) != PassData.end()) return false;
+public:
+  bool add(std::string name, void* data) {
+    if (PassData.find(name) != PassData.end())
+      return false;
 
     PassData[name] = data;
     return true;
   }
 
-  void *get(std::string name) {
-    std::map<std::string, void *>::iterator itr;
+  void* get(std::string name) {
+    std::map<std::string, void*>::iterator itr;
 
     itr = PassData.find(name);
     if (itr != PassData.end())
@@ -123,17 +125,17 @@ class GlobalContext {
   HookMap HookCallees;
 
   // Indirect call instructions
-  std::vector<CallInst *> IndirectCallInsts;
+  std::vector<CallInst *>IndirectCallInsts;
 
   // Map function signature to functions
-  DenseMap<size_t, FuncSet> sigFuncsMap;
+  DenseMap<size_t, FuncSet>sigFuncsMap;
 
   // Map global function name to function.
   NameFuncMap GlobalFuncs;
 
   // Unified functions -- no redundant inline functions
-  DenseMap<size_t, Function *> UnifiedFuncMap;
-  set<Function *> UnifiedFuncSet;
+  DenseMap<size_t, Function *>UnifiedFuncMap;
+  set<Function *>UnifiedFuncSet;
 
   /****** Alias Analysis *******/
   FuncPointerAnalysisMap FuncPAResults;
@@ -152,7 +154,7 @@ class GlobalContext {
 
   // map structure to syscall entry reaching allocation site
   SyscallMap allocSyscallMap;
-
+  
   // map structure to syscall entry reaching copy site
   SyscallMap copySyscallMap;
 
@@ -169,7 +171,7 @@ class GlobalContext {
   FuncSet devDenyList;
 
   /**************** End Key Object Identification ************/
-
+  
   /****************** Key Object Evaluation **************/
   // TODO: delete if no evaluation needed
   /**************** End Key Object Evaluation ************/
@@ -183,22 +185,24 @@ class GlobalContext {
 };
 
 class IterativeModulePass {
- protected:
+protected:
   GlobalContext *Ctx;
   const char *ID;
-
- public:
+public:
   IterativeModulePass(GlobalContext *Ctx_, const char *ID_)
-      : Ctx(Ctx_), ID(ID_) {}
+    : Ctx(Ctx_), ID(ID_) { }
 
   // run on each module before iterative pass
-  virtual bool doInitialization(llvm::Module *M) { return true; }
+  virtual bool doInitialization(llvm::Module *M)
+    { return true; }
 
   // run on each module after iterative pass
-  virtual bool doFinalization(llvm::Module *M) { return true; }
+  virtual bool doFinalization(llvm::Module *M)
+    { return true; }
 
   // iterative pass
-  virtual bool doModulePass(llvm::Module *M) { return false; }
+  virtual bool doModulePass(llvm::Module *M)
+    { return false; }
 
   virtual void run(ModuleList &modules);
 };
